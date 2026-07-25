@@ -128,6 +128,91 @@ def test_upload_rejects_file_larger_than_configured_limit(client, app):
     body = response.get_json()
     assert body["error"]["code"] == "VALIDATION_ERROR"
     assert body["error"]["details"]["field"] == "file"
+    assert list(Path(app.config["UPLOAD_DIR"]).glob("*")) == []
+
+
+def test_upload_returns_structured_413_when_http_body_exceeds_global_limit(client, app):
+    app.config["MAX_CONTENT_LENGTH"] = 1
+
+    response = client.post(
+        "/api/v1/attachments",
+        data={"session_id": "unused", "file": (BytesIO(b"content"), "notes.txt")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 413
+    body = response.get_json()
+    assert body["error"]["code"] == "REQUEST_ENTITY_TOO_LARGE"
+    assert body["request_id"] == response.headers["X-Request-ID"]
+
+
+def test_upload_rejects_a_disguised_image_and_removes_quarantine(client, app):
+    session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
+
+    response = client.post(
+        "/api/v1/attachments",
+        data={
+            "session_id": session_id,
+            "kind": "image",
+            "file": (BytesIO(b"plain text pretending to be an image"), "fake.png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"]["field"] == "file"
+    assert list(Path(app.config["UPLOAD_DIR"]).glob("*")) == []
+
+
+def test_upload_rejects_declared_mime_mismatched_with_extension(client, app):
+    session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
+
+    response = client.post(
+        "/api/v1/attachments",
+        data={
+            "session_id": session_id,
+            "kind": "document",
+            "file": (BytesIO(b"content"), "notes.txt", "image/png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert "Content-Type" in response.get_json()["error"]["message"]
+    assert not Path(app.config["UPLOAD_DIR"]).exists()
+
+
+def test_upload_uses_server_canonical_mime_for_generic_client_metadata(client):
+    session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
+
+    response = client.post(
+        "/api/v1/attachments",
+        data={
+            "session_id": session_id,
+            "file": (BytesIO(b"content"), "notes.txt", "application/octet-stream"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["mime_type"] == "text/plain"
+
+
+def test_upload_rejects_an_oversized_filename_before_writing(client, app):
+    session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
+
+    response = client.post(
+        "/api/v1/attachments",
+        data={
+            "session_id": session_id,
+            "file": (BytesIO(b"content"), f"{'a' * 181}.txt"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert "excede" in response.get_json()["error"]["message"]
+    assert not Path(app.config["UPLOAD_DIR"]).exists()
 
 
 def test_get_attachment_downloads_the_uploaded_file(client):

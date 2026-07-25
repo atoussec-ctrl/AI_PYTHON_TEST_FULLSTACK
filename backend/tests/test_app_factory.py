@@ -21,10 +21,10 @@ from app.extensions import db
 from app.models import Attachment, Book, ChatMessage, ChatSession
 
 
-def test_create_app_defaults_to_app_env_when_config_name_omitted(monkeypatch):
+def test_create_app_defaults_to_app_env_when_config_name_omitted(monkeypatch, app_factory):
     monkeypatch.setenv("APP_ENV", "testing")
 
-    app = create_app()
+    app = app_factory()
 
     assert app.config["TESTING"] is True
 
@@ -36,21 +36,28 @@ def test_unmatched_route_returns_json_error_envelope(client):
     assert response.get_json()["error"]["code"] == "NOT_FOUND"
 
 
-def test_invalid_chat_gateway_config_maps_to_generic_400(client, app):
+def test_invalid_chat_gateway_config_is_not_misreported_as_client_error(client, app, caplog):
     session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
     app.config["CHAT_GATEWAY"] = "not-a-real-gateway"
-
-    response = client.post(
-        "/api/v1/chat/messages",
-        json={"session_id": session_id, "content": "oi"},
-    )
-
-    assert response.status_code == 400
-    assert response.get_json()["error"]["code"] == "VALIDATION_ERROR"
-
-
-def test_unexpected_exception_returns_generic_500_outside_testing_mode(app, client):
     app.config["TESTING"] = False
+    caplog.set_level("ERROR")
+    try:
+        response = client.post(
+            "/api/v1/chat/messages",
+            json={"session_id": session_id, "content": "oi"},
+        )
+
+        assert response.status_code == 500
+        assert response.get_json()["error"]["code"] == "INTERNAL_SERVER_ERROR"
+        assert "not-a-real-gateway" not in response.get_data(as_text=True)
+        assert "Erro não tratado durante a requisição" in caplog.text
+    finally:
+        app.config["TESTING"] = True
+
+
+def test_unexpected_exception_returns_generic_500_outside_testing_mode(app, client, caplog):
+    app.config["TESTING"] = False
+    caplog.set_level("ERROR")
     try:
 
         @app.route("/__test/boom")
@@ -63,6 +70,7 @@ def test_unexpected_exception_returns_generic_500_outside_testing_mode(app, clie
         body = response.get_json()
         assert body["error"]["code"] == "INTERNAL_SERVER_ERROR"
         assert body["error"]["message"] == "Erro interno inesperado."
+        assert "Erro não tratado durante a requisição" in caplog.text
     finally:
         app.config["TESTING"] = True
 
@@ -79,7 +87,9 @@ def test_unexpected_exception_propagates_in_testing_mode(app, client):
         client.get("/__test/boom-in-tests")
 
 
-def test_create_app_falls_back_to_create_all_when_migrations_dir_is_missing(tmp_path, monkeypatch):
+def test_create_app_falls_back_to_create_all_when_migrations_dir_is_missing(
+    tmp_path, monkeypatch, app_factory
+):
     """Bootstrap-only path: only true while `flask db init` itself sets up
     migrations/ for the first time (it needs a working create_app() to run
     against) — never true once migrations/ is committed to the repo."""
@@ -91,7 +101,7 @@ def test_create_app_falls_back_to_create_all_when_migrations_dir_is_missing(tmp_
         DevelopmentConfig, "SQLALCHEMY_DATABASE_URI", f"sqlite:///{tmp_path / 'bootstrap.db'}"
     )
 
-    new_app = create_app("development")
+    new_app = app_factory("development")
 
     with new_app.app_context():
         inspector = sa_inspect(db.engine)
@@ -168,7 +178,9 @@ def test_create_app_refuses_to_boot_in_production_without_an_api_key(tmp_path, m
         create_app("production")
 
 
-def test_create_app_boots_in_production_with_real_secrets_configured(tmp_path, monkeypatch):
+def test_create_app_boots_in_production_with_real_secrets_configured(
+    tmp_path, monkeypatch, app_factory
+):
     monkeypatch.setattr(ProductionConfig, "SECRET_KEY", "a-real-secret")
     monkeypatch.setattr(ProductionConfig, "API_KEY", "a-real-key")
     monkeypatch.setattr(
@@ -176,7 +188,7 @@ def test_create_app_boots_in_production_with_real_secrets_configured(tmp_path, m
     )
     monkeypatch.setattr(ProductionConfig, "UPLOAD_DIR", str(tmp_path / "uploads"))
 
-    prod_app = create_app("production")
+    prod_app = app_factory("production")
 
     assert prod_app.config["API_KEY"] == "a-real-key"
 

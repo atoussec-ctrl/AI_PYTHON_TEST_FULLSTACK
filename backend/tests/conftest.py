@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import pytest
@@ -11,6 +11,27 @@ from flask.testing import FlaskClient
 
 from app import create_app
 from app.extensions import db as _db
+
+
+def _dispose_database(application: Flask) -> None:
+    with application.app_context():
+        _db.session.remove()
+        _db.engine.dispose()
+
+
+@pytest.fixture()
+def app_factory() -> Generator[Callable[[str | None], Flask], None, None]:
+    """Create extra app instances and deterministically close their engines."""
+    applications: list[Flask] = []
+
+    def factory(config_name: str | None = None) -> Flask:
+        application = create_app(config_name)
+        applications.append(application)
+        return application
+
+    yield factory
+    for application in reversed(applications):
+        _dispose_database(application)
 
 
 @pytest.fixture()
@@ -25,6 +46,7 @@ def app(tmp_path: Path) -> Generator[Flask, None, None]:
     with application.app_context():
         _db.session.remove()
         _db.drop_all()
+    _dispose_database(application)
 
 
 @pytest.fixture()

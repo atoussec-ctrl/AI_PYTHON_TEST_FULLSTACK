@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_create_and_search_books(client):
     response = client.post(
         "/api/v1/books",
@@ -61,6 +64,23 @@ def test_create_book_validates_required_fields(client):
     body = response.get_json()
     assert body["error"]["code"] == "VALIDATION_ERROR"
     assert body["error"]["details"]["field"] == "author"
+
+
+@pytest.mark.parametrize("field", ["title", "author", "summary"])
+def test_create_book_rejects_null_required_text_fields(client, field):
+    payload = _valid_book_payload(**{field: None})
+
+    response = client.post("/api/v1/books", json=payload)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"]["field"] == field
+
+
+def test_create_book_rejects_non_object_json_body(client):
+    response = client.post("/api/v1/books", json=["not", "an", "object"])
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"]["field"] == "body"
 
 
 def test_search_books_by_category_filter(client):

@@ -12,13 +12,29 @@ import re
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from time import monotonic
 
+from flask import current_app, has_app_context
 from werkzeug.datastructures import FileStorage
 
 from app.errors import ValidationError
 from app.models import Book
 from app.services.books import BookService
+from app.services.file_security import (
+    extension_for,
+    read_stream_limited,
+    safe_filename,
+    validate_declared_mime,
+    validate_file_bytes,
+)
 from app.services.observability import traceable_if_enabled
+
+DEFAULT_MAX_UPLOAD_SIZE_MB = 10
+DEFAULT_MAX_FILENAME_CHARS = 180
+DEFAULT_MAX_PDF_PAGES = 50
+DEFAULT_MAX_PDF_CONTENT_STREAM_MB = 16
+DEFAULT_MAX_PDF_EXTRACTED_CHARS = 100_000
+DEFAULT_MAX_PDF_PROCESSING_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -69,11 +85,22 @@ class BookMetadataExtractor:
                 field="file",
             )
 
+        try:
+            publication_year = int(str(year_value).strip())
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(
+                "Ano de publicação extraído deve ser numérico.", field="file"
+            ) from exc
+        if publication_year < 1000 or publication_year > 9999:
+            raise ValidationError(
+                "Ano de publicação extraído deve conter quatro dígitos.", field="file"
+            )
+
         return ExtractedBook(
             title=clean(title),
             category=clean(category or "Programação"),
             author=clean(author),
-            publication_year=int(str(year_value)[:4]),
+            publication_year=publication_year,
             summary=clean(summary),
         )
 
@@ -91,19 +118,27 @@ class BookImportService:
     def import_file(self, file: FileStorage | None) -> tuple[Book, ExtractedBook]:
         if not file or not file.filename:
             raise ValidationError("Campo file é obrigatório.", field="file")
-        extension = Path(file.filename).suffix.lower()
-        if extension not in {".txt", ".md", ".json", ".pdf"}:
+        filename = safe_filename(
+            file.filename,
+            max_chars=_config_int("MAX_UPLOAD_FILENAME_CHARS", DEFAULT_MAX_FILENAME_CHARS),
+        )
+        extension = extension_for(filename)
+        if extension not in {"txt", "md", "json", "pdf"}:
             raise ValidationError("Envie um arquivo .txt, .md, .json ou .pdf.", field="file")
 
-        raw = file.read()
-        if extension == ".pdf":
+        validate_declared_mime(extension, file.mimetype)
+        max_bytes = _config_int("MAX_UPLOAD_SIZE_MB", DEFAULT_MAX_UPLOAD_SIZE_MB) * 1024 * 1024
+        raw = read_stream_limited(file.stream, max_bytes)
+        validate_file_bytes(raw, extension)
+
+        if extension == "pdf":
             content = extract_pdf_text(raw)
         else:
-            content = raw.decode("utf-8", errors="ignore")
+            content = raw.decode("utf-8-sig")
         if not content.strip():
             raise ValidationError("Arquivo sem texto legível para extração.", field="file")
 
-        extracted = self.extractor.extract(filename=file.filename, content=content)
+        extracted = self.extractor.extract(filename=filename, content=content)
         book = self.book_service.create(
             {
                 "title": extracted.title,
@@ -116,19 +151,118 @@ class BookImportService:
         return book, extracted
 
 
-def extract_pdf_text(raw: bytes) -> str:
-    """Extract text from PDF bytes. Returns empty string for scanned/text-less PDFs."""
+def extract_pdf_text(
+    raw: bytes,
+    *,
+    max_pages: int | None = None,
+    max_content_stream_bytes: int | None = None,
+    max_extracted_chars: int | None = None,
+    max_processing_seconds: int | None = None,
+) -> str:
+    """Extract bounded text from a PDF.
+
+    Invalid PDFs still return an empty string so callers can report the same
+    user-facing "no readable text" error. Resource-limit violations are
+    validation errors and are never hidden as an empty document.
+    """
     try:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover - depends on optional package
         raise RuntimeError("Dependência pypdf não instalada para leitura de PDF.") from exc
 
+    page_limit = _positive_limit(
+        max_pages,
+        "MAX_PDF_PAGES",
+        DEFAULT_MAX_PDF_PAGES,
+    )
+    stream_limit = _non_negative_limit(
+        max_content_stream_bytes,
+        "MAX_PDF_CONTENT_STREAM_MB",
+        DEFAULT_MAX_PDF_CONTENT_STREAM_MB,
+        multiplier=1024 * 1024,
+    )
+    text_limit = _positive_limit(
+        max_extracted_chars,
+        "MAX_PDF_EXTRACTED_CHARS",
+        DEFAULT_MAX_PDF_EXTRACTED_CHARS,
+    )
+    time_limit = _positive_limit(
+        max_processing_seconds,
+        "MAX_PDF_PROCESSING_SECONDS",
+        DEFAULT_MAX_PDF_PROCESSING_SECONDS,
+    )
+    deadline = monotonic() + time_limit
+
     try:
-        reader = PdfReader(BytesIO(raw))
-        pages = [page.extract_text() or "" for page in reader.pages]
+        reader = PdfReader(BytesIO(raw), strict=True)
+        if reader.is_encrypted:
+            raise ValidationError("PDF criptografado não é suportado.", field="file")
+        if len(reader.pages) > page_limit:
+            raise ValidationError(f"PDF excede o limite de {page_limit} páginas.", field="file")
+
+        pages: list[str] = []
+        content_stream_bytes = 0
+        extracted_chars = 0
+        for page in reader.pages:
+            _ensure_before_deadline(deadline)
+            contents = page.get_contents()
+            if contents is not None:
+                content_stream_bytes += len(contents.get_data())
+                if content_stream_bytes > stream_limit:
+                    raise ValidationError(
+                        "PDF excede o limite seguro de conteúdo descompactado.",
+                        field="file",
+                    )
+
+            page_text = page.extract_text() or ""
+            extracted_chars += len(page_text)
+            if extracted_chars > text_limit:
+                raise ValidationError("PDF excede o limite seguro de texto extraído.", field="file")
+            pages.append(page_text)
+            _ensure_before_deadline(deadline)
+    except ValidationError:
+        raise
+    except (MemoryError, RecursionError) as exc:
+        raise ValidationError(
+            "PDF excede os limites seguros de processamento.", field="file"
+        ) from exc
     except Exception:
         return ""
     return "\n".join(pages).strip()
+
+
+def _config_int(name: str, default: int) -> int:
+    value = current_app.config.get(name, default) if has_app_context() else default
+    return int(value)
+
+
+def _positive_limit(explicit: int | None, config_name: str, default: int) -> int:
+    value = explicit if explicit is not None else _config_int(config_name, default)
+    if value <= 0:
+        raise ValueError(f"{config_name} deve ser maior que zero")
+    return value
+
+
+def _non_negative_limit(
+    explicit: int | None,
+    config_name: str,
+    default: int,
+    *,
+    multiplier: int = 1,
+) -> int:
+    if explicit is not None:
+        if explicit < 0:
+            raise ValueError(f"{config_name} deve ser maior ou igual a zero")
+        return explicit
+    configured = _config_int(config_name, default)
+    if configured < 0:
+        raise ValueError(f"{config_name} deve ser maior ou igual a zero")
+    return configured * multiplier
+
+
+def _ensure_before_deadline(deadline: float) -> None:
+    if monotonic() > deadline:
+        raise ValidationError("PDF excedeu o tempo seguro de processamento.", field="file")
 
 
 def parse_json_content(content: str) -> dict[str, object] | None:

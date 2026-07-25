@@ -5,13 +5,14 @@ from flask import Blueprint, jsonify, request
 from app.services.book_import import BookImportService
 from app.services.books import BookService
 from app.utils.http import parse_pagination
+from app.validation import json_object
 
 books_bp = Blueprint("books", __name__)
 
 
 @books_bp.post("/books")
 def create_book():
-    payload = request.get_json(silent=True) or {}
+    payload = json_object(request.get_json(silent=True))
     book = BookService().create(payload)
     return jsonify(book.to_dict()), 201
 

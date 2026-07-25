@@ -15,9 +15,12 @@ from app.env_loader import load_project_env
 load_project_env()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE = 5
 
 
 def resolve_sqlite_url(value: str) -> str:
+    if value == "sqlite:///:memory:":
+        return value
     if value.startswith("sqlite:///./"):
         relative_path = value.removeprefix("sqlite:///./")
         return f"sqlite:///{BASE_DIR / relative_path}"
@@ -59,6 +62,7 @@ class Config:
     # backend compartilhado (Redis) seria necessário para um limite exato
     # entre processos.
     RATELIMIT_DEFAULT: str = os.getenv("RATE_LIMIT_DEFAULT", "200 per minute")
+    RATELIMIT_STORAGE_URI: str = os.getenv("RATELIMIT_STORAGE_URI", "memory://")
     RATELIMIT_HEADERS_ENABLED: bool = True
     # Limite dedicado e mais estrito para o endpoint que chama o provedor de
     # IA pago — lido dinamicamente a cada requisição (ver routes/chat.py),
@@ -89,6 +93,19 @@ class Config:
     # Uploads
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", str(BASE_DIR / "storage" / "uploads"))
     MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))
+    # A multipart chat request may contain several individually bounded files.
+    # Flask's per-request override applies this aggregate ceiling only to that
+    # endpoint; other upload endpoints retain MAX_UPLOAD_SIZE_MB.
+    MAX_MESSAGE_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_MESSAGE_UPLOAD_SIZE_MB", "50"))
+    MAX_ATTACHMENTS_PER_MESSAGE: int = int(
+        os.getenv("MAX_ATTACHMENTS_PER_MESSAGE", str(DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE))
+    )
+    ORPHAN_UPLOAD_MAX_AGE_HOURS: int = int(os.getenv("ORPHAN_UPLOAD_MAX_AGE_HOURS", "24"))
+    MAX_UPLOAD_FILENAME_CHARS: int = int(os.getenv("MAX_UPLOAD_FILENAME_CHARS", "180"))
+    MAX_PDF_PAGES: int = int(os.getenv("MAX_PDF_PAGES", "50"))
+    MAX_PDF_CONTENT_STREAM_MB: int = int(os.getenv("MAX_PDF_CONTENT_STREAM_MB", "16"))
+    MAX_PDF_EXTRACTED_CHARS: int = int(os.getenv("MAX_PDF_EXTRACTED_CHARS", "100000"))
+    MAX_PDF_PROCESSING_SECONDS: int = int(os.getenv("MAX_PDF_PROCESSING_SECONDS", "10"))
     MAX_CONTENT_LENGTH: int = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
     # CORS
@@ -116,17 +133,33 @@ class DevelopmentConfig(Config):
 
 
 class TestingConfig(Config):
-    """Testing-specific settings — uses in-memory SQLite."""
+    """Testing-specific settings.
+
+    Unit tests keep the fast in-memory default. Browser-level tests may opt
+    into an isolated file database because Flask's threaded development
+    server must not share one in-memory SQLite connection across concurrent
+    requests.
+    """
 
     TESTING: bool = True
-    SQLALCHEMY_DATABASE_URI: str = "sqlite:///:memory:"
+    SQLALCHEMY_DATABASE_URI: str = resolve_sqlite_url(
+        os.getenv("TEST_DATABASE_URL", "sqlite:///:memory:")
+    )
     LANGSMITH_TRACING: str = "false"
     OPENAI_API_KEY: str = "test-key"
     HUGGINGFACE_API_KEY: str = ""
     CHAT_GATEWAY: str = "local"
     CHAT_MAX_MESSAGE_CHARS: int = 8000
     ALLOWED_CHAT_MODELS: str = ""
-    UPLOAD_DIR: str = "/tmp/mindsight-test-uploads"
+    UPLOAD_DIR: str = os.getenv("TEST_UPLOAD_DIR", "/tmp/mindsight-test-uploads")
+    MAX_MESSAGE_UPLOAD_SIZE_MB: int = 50
+    MAX_ATTACHMENTS_PER_MESSAGE: int = DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE
+    ORPHAN_UPLOAD_MAX_AGE_HOURS: int = 24
+    MAX_UPLOAD_FILENAME_CHARS: int = 180
+    MAX_PDF_PAGES: int = 50
+    MAX_PDF_CONTENT_STREAM_MB: int = 16
+    MAX_PDF_EXTRACTED_CHARS: int = 100000
+    MAX_PDF_PROCESSING_SECONDS: int = 10
     FAISS_INDEX_PATH: str = "/tmp/mindsight-test-faiss.index"
     WTF_CSRF_ENABLED: bool = False
     API_KEY: str = ""
@@ -160,6 +193,42 @@ INSECURE_PLACEHOLDER_VALUES = frozenset(
 
 class InsecureConfigurationError(RuntimeError):
     """Raised when APP_ENV=production would boot with a guessable secret."""
+
+
+class InvalidConfigurationError(RuntimeError):
+    """Raised when a resource limit is invalid or internally inconsistent."""
+
+
+POSITIVE_RESOURCE_LIMITS = (
+    "MAX_UPLOAD_SIZE_MB",
+    "MAX_MESSAGE_UPLOAD_SIZE_MB",
+    "MAX_ATTACHMENTS_PER_MESSAGE",
+    "ORPHAN_UPLOAD_MAX_AGE_HOURS",
+    "MAX_UPLOAD_FILENAME_CHARS",
+    "MAX_PDF_PAGES",
+    "MAX_PDF_CONTENT_STREAM_MB",
+    "MAX_PDF_EXTRACTED_CHARS",
+    "MAX_PDF_PROCESSING_SECONDS",
+)
+
+
+def assert_resource_limits_are_valid(app_config: Mapping[str, object]) -> None:
+    """Fail at startup instead of turning bad limits into request-time 500s."""
+    for name in POSITIVE_RESOURCE_LIMITS:
+        raw_value = app_config.get(name)
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, str)):
+            raise InvalidConfigurationError(f"{name} deve ser um inteiro maior que zero.")
+        try:
+            value = int(raw_value)
+        except ValueError as exc:
+            raise InvalidConfigurationError(f"{name} deve ser um inteiro maior que zero.") from exc
+        if value <= 0:
+            raise InvalidConfigurationError(f"{name} deve ser maior que zero.")
+
+    if int(app_config["MAX_UPLOAD_FILENAME_CHARS"]) > 255:
+        raise InvalidConfigurationError(
+            "MAX_UPLOAD_FILENAME_CHARS não pode exceder os 255 caracteres do schema."
+        )
 
 
 def assert_production_config_is_safe(app_config: Mapping[str, object]) -> None:

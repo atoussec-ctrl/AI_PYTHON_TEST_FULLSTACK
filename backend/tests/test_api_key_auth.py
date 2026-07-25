@@ -47,6 +47,14 @@ def test_request_is_accepted_with_correct_credential(app, client):
     assert response.status_code == 200
 
 
+def test_bearer_scheme_is_case_insensitive(app, client):
+    app.config["API_KEY"] = "s3cret"
+
+    response = client.get("/api/v1/books", headers={"Authorization": "bearer s3cret"})
+
+    assert response.status_code == 200
+
+
 def test_health_endpoints_are_exempt_even_when_api_key_is_configured(app, client):
     app.config["API_KEY"] = "s3cret"
 

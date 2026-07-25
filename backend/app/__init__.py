@@ -11,9 +11,14 @@ from flask_migrate import stamp, upgrade
 from sqlalchemy import inspect as sa_inspect
 from werkzeug.exceptions import HTTPException
 
-from app.config import assert_production_config_is_safe, config_by_name
+from app.config import (
+    assert_production_config_is_safe,
+    assert_resource_limits_are_valid,
+    config_by_name,
+)
 from app.errors import AuthenticationError, NotFoundError, ValidationError
 from app.extensions import cors, db, limiter, migrate
+from app.metrics import register_metrics_middleware
 from app.request_id import configure_logging, current_request_id, register_request_id_middleware
 from app.security import register_api_key_guard
 from app.utils.http import error_response
@@ -36,6 +41,8 @@ def create_app(config_name: str | None = None) -> Flask:
 
     app = Flask(__name__)
     app.config.from_object(config_by_name[config_name])
+    assert_resource_limits_are_valid(app.config)
+    app.config["MAX_CONTENT_LENGTH"] = int(app.config["MAX_UPLOAD_SIZE_MB"]) * 1024 * 1024
     if config_name == "production":
         assert_production_config_is_safe(app.config)
 
@@ -47,8 +54,10 @@ def create_app(config_name: str | None = None) -> Flask:
     limiter.init_app(app)
 
     _register_blueprints(app)
+    _register_commands(app)
     _register_error_handlers(app)
     register_request_id_middleware(app)
+    register_metrics_middleware(app)
     register_api_key_guard(app)
 
     @app.route("/health")
@@ -92,6 +101,7 @@ def _register_blueprints(app: Flask) -> None:
     from app.routes.books import books_bp
     from app.routes.chat import chat_bp
     from app.routes.health import health_bp
+    from app.routes.metrics import metrics_bp
     from app.routes.openapi import docs_bp
     from app.routes.semantic_search import semantic_search_bp
 
@@ -101,6 +111,13 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(attachments_bp, url_prefix="/api/v1")
     app.register_blueprint(semantic_search_bp, url_prefix="/api/v1")
     app.register_blueprint(docs_bp)
+    app.register_blueprint(metrics_bp)
+
+
+def _register_commands(app: Flask) -> None:
+    from app.commands import register_commands
+
+    register_commands(app)
 
 
 def _register_error_handlers(app: Flask) -> None:
@@ -145,18 +162,11 @@ def _register_error_handlers(app: Flask) -> None:
             details={"field": error.field} if error.field else {},
         )
 
-    @app.errorhandler(ValueError)
-    def handle_value_error(error: ValueError):  # type: ignore[no-untyped-def]
-        return error_response(
-            code="VALIDATION_ERROR",
-            message=str(error),
-            status_code=400,
-        )
-
     @app.errorhandler(Exception)
     def handle_unexpected_error(error: Exception):  # type: ignore[no-untyped-def]
         if app.config.get("TESTING"):
             raise error
+        app.logger.exception("Erro não tratado durante a requisição")
         return error_response(
             code="INTERNAL_SERVER_ERROR",
             message="Erro interno inesperado.",

@@ -1,0 +1,3 @@
+# Compatibility entry point for an editable development install.
+# Tool versions live in pyproject.toml's `dev` extra.
+-e .[dev]

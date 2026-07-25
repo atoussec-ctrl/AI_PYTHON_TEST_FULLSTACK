@@ -36,6 +36,44 @@ def test_create_session_send_message_and_stream(client):
     assert feedback.get_json()["recorded"] is False
 
 
+def test_create_session_treats_null_title_as_the_default(client):
+    response = client.post("/api/v1/chat/sessions", json={"title": None})
+
+    assert response.status_code == 201
+    assert response.get_json()["title"] == "Nova conversa"
+
+
+def test_chat_rejects_non_object_json_body(client):
+    response = client.post("/api/v1/chat/messages", json=["invalid"])
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"]["field"] == "body"
+
+
+def test_chat_rejects_non_string_content(client):
+    session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
+
+    response = client.post(
+        "/api/v1/chat/messages",
+        json={"session_id": session_id, "content": {"unexpected": "object"}},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"]["field"] == "content"
+
+
+def test_chat_rejects_attachment_ids_that_are_not_a_list(client):
+    session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
+
+    response = client.post(
+        "/api/v1/chat/messages",
+        json={"session_id": session_id, "content": "oi", "attachment_ids": "att_1"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["details"]["field"] == "attachment_ids"
+
+
 def test_chat_rejects_invalid_thinking_mode(client):
     session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
 

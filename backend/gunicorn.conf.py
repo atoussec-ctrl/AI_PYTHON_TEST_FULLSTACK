@@ -21,3 +21,13 @@ def post_fork(server, worker) -> None:
 
     with app.app_context():
         db.engine.dispose()
+
+
+def child_exit(server, worker) -> None:
+    """Tell the Prometheus multiprocess collector a worker has exited."""
+    import os
+
+    from prometheus_client import multiprocess
+
+    if os.getenv("PROMETHEUS_MULTIPROC_DIR"):
+        multiprocess.mark_process_dead(worker.pid)

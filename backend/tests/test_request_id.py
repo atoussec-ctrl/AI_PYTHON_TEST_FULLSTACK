@@ -10,6 +10,7 @@ wasn't (documented in .env.example but never read by app code).
 from __future__ import annotations
 
 import logging
+from io import StringIO
 
 from app.request_id import RequestIdLogFilter, configure_logging, current_request_id
 
@@ -34,6 +35,15 @@ def test_echoes_back_a_client_provided_request_id(client):
 
     assert response.headers["X-Request-ID"] == "client-abc-123"
     assert response.get_json()["request_id"] == "client-abc-123"
+
+
+def test_replaces_an_unsafe_or_oversized_client_request_id(client):
+    supplied = "x" * 129
+
+    response = client.get("/api/v1/health", headers={"X-Request-ID": supplied})
+
+    assert response.headers["X-Request-ID"] != supplied
+    assert len(response.headers["X-Request-ID"]) == 36
 
 
 def test_error_response_body_includes_the_same_request_id_as_the_header(client):
@@ -119,6 +129,33 @@ def test_configure_logging_attaches_a_formatted_stream_handler_outside_testing_m
 
         assert len(new_handlers) == 1
         assert "request_id" in new_handlers[0].formatter._fmt
+        assert any(isinstance(item, RequestIdLogFilter) for item in new_handlers[0].filters)
+    finally:
+        for handler in root.handlers[:]:
+            if handler not in handlers_before:
+                root.removeHandler(handler)
+
+
+def test_configured_handler_formats_records_from_child_loggers(app):
+    root = logging.getLogger()
+    handlers_before = list(root.handlers)
+    app.config["TESTING"] = False
+
+    try:
+        configure_logging(app)
+        handler = next(handler for handler in root.handlers if handler not in handlers_before)
+        stream = StringIO()
+        handler.setStream(stream)
+
+        with app.test_request_context("/"):
+            from flask import g
+
+            g.request_id = "child-trace"
+            logging.getLogger("app.services.example").warning("child message")
+
+        output = stream.getvalue()
+        assert "request_id=child-trace" in output
+        assert "child message" in output
     finally:
         for handler in root.handlers[:]:
             if handler not in handlers_before:

@@ -7,27 +7,35 @@ from datetime import date
 from app.errors import NotFoundError, ValidationError
 from app.extensions import db
 from app.repositories import BookRepository
+from app.validation import required_text
 
 
 def parse_book_payload(payload: dict[str, object]) -> dict[str, object]:
-    required = ("title", "author", "summary")
-    for field in required:
-        if not str(payload.get(field, "")).strip():
-            raise ValidationError(f"Campo {field} é obrigatório.", field=field)
-
+    title = required_text(payload, "title")
+    author = required_text(payload, "author")
+    summary = required_text(payload, "summary")
+    raw_category = payload.get("category")
+    if raw_category is not None and not isinstance(raw_category, str):
+        raise ValidationError("Campo category deve ser texto.", field="category")
     publication_date = parse_publication_date(payload)
 
     return {
-        "title": str(payload["title"]).strip(),
-        "category": str(payload.get("category", "Programação")).strip() or "Programação",
-        "author": str(payload["author"]).strip(),
+        "title": title,
+        "category": (raw_category or "Programação").strip() or "Programação",
+        "author": author,
         "publication_date": publication_date,
-        "summary": str(payload["summary"]).strip(),
+        "summary": summary,
     }
 
 
 def parse_publication_date(payload: dict[str, object]) -> date:
-    raw_date = str(payload.get("publication_date", "")).strip()
+    date_value = payload.get("publication_date")
+    if date_value is not None and not isinstance(date_value, str):
+        raise ValidationError(
+            "Campo publication_date deve usar o formato YYYY-MM-DD.",
+            field="publication_date",
+        )
+    raw_date = (date_value or "").strip()
     if raw_date:
         try:
             return date.fromisoformat(raw_date)
@@ -37,7 +45,14 @@ def parse_publication_date(payload: dict[str, object]) -> date:
                 field="publication_date",
             ) from exc
 
-    raw_year = str(payload.get("publication_year", payload.get("year", ""))).strip()
+    year_value = payload.get("publication_year", payload.get("year"))
+    if isinstance(year_value, bool) or (
+        year_value is not None and not isinstance(year_value, (str, int))
+    ):
+        raise ValidationError(
+            "Campo publication_year deve ser um ano numérico.", field="publication_year"
+        )
+    raw_year = str(year_value).strip() if year_value is not None else ""
     if not raw_year:
         raise ValidationError(
             "Campo publication_date ou publication_year é obrigatório.",
