@@ -2,7 +2,7 @@
 
 Este roadmap prioriza reducao de risco antes de features novas.
 
-Atualizado em 2026-07-21: os tres primeiros itens do P0 foram fechados (ver `DOCS/33_IMPLEMENTATION_STATUS.md`). Ownership por usuario segue fora do escopo — o MVP e single-tenant por decisao de produto (`DOCS/01_PRODUCT_VISION.md`), entao autenticacao minima por API key (sem contas) fechou o risco real de exposicao sem multiusuario.
+Atualizado em 2026-07-24: o segredo compartilhado fecha a exposicao anonima do MVP single-tenant controlado, mas nao deve ser confundido com autenticacao/autorizacao de usuario. Ownership volta a ser P0 se o produto for publicado para clientes distintos.
 
 ## P0 - Fechar riscos de exposicao
 
@@ -11,7 +11,7 @@ Atualizado em 2026-07-21: os tres primeiros itens do P0 foram fechados (ver `DOC
 | Usar WSGI em producao | Container de producao nao usa servidor dev Flask. | Dockerfile/compose de producao usam WSGI. | Concluido — Gunicorn com `--preload`/`post_fork`, verificado via build+run real. |
 | Validar config de producao | Startup falha com secrets/placeholders inseguros. | Teste cobre `APP_ENV=production` com `SECRET_KEY` invalida. | Concluido — cobre `SECRET_KEY` e `API_KEY`. |
 | Autenticacao minima | API deixa de ser publica para dados sensiveis. | Endpoints de chat/anexos/livros exigem credencial. | Concluido — segredo compartilhado via `API_KEY`/`Authorization: Bearer`. |
-| Ownership | Usuario so acessa seus dados. | Testes provam 403/404 para recurso de outro usuario. | Fora de escopo — MVP e single-tenant por decisao de produto documentada. |
+| Ownership | Usuario so acessa seus dados. | Testes provam 403/404 para recurso de outro usuario. | Condicional: fora do MVP single-tenant; obrigatorio antes de qualquer deploy publico/multiusuario. |
 
 Fluxo alvo de autorizacao:
 
@@ -32,8 +32,11 @@ flowchart TD
 | Alembic/Flask-Migrate | Schema versionado. | CI aplica migrations em banco limpo. | Concluido. |
 | Manter enum de status alinhado | Backend, OpenAPI e TS usam `failed`. | Teste de contrato cobre o valor `failed`. | Concluido. |
 | Paginacao | Listagens previsiveis. | Endpoints aceitam `limit` e cursor/page com maximo. | Concluido. |
-| Cleanup de uploads orfaos | Rotina remove anexos que falharam antes de vincular mensagem. | Job/endpoint interno testado com arquivos orfaos. | Concluido (remocao fisica ao deletar sessao). |
-| Transacao de anexos | Envio com anexos nao deixa orfaos. | Falha de `sendMessage` aciona compensacao ou endpoint unico. | Concluido — compensacao: `DELETE /attachments/{id}` remove anexos nao vinculados; o frontend chama isso automaticamente quando o envio falha (incluindo falha no meio de um lote de upload). |
+| Hardening de uploads/PDF | Arquivo disfarçado ou excessivo não chega ao storage definitivo/parser sem limites. | Testes cobrem assinatura, MIME, streaming limitado, quarentena, rollback, páginas, streams, texto e deadline. | Concluido para o MVP — AV/CDR e processo isolado ficam condicionais a exposição pública. |
+| Contrato frontend gerado | OpenAPI e TypeScript não divergem silenciosamente. | Artefato e tipos são reproduzíveis; CI falha em drift. | Concluido — `export_openapi.py`, `openapi-typescript`, `api:check`. |
+| Smoke full-stack | Quebras entre browser, proxy, Flask e banco são detectadas. | Jornada real persiste chat e livro sem interceptação de API. | Concluido — workflow `ci-fullstack.yml`. |
+| Cleanup de uploads orfaos | Rotina remove anexos que falharam antes de vincular mensagem. | Job/endpoint interno testado com arquivos orfaos. | Concluido — CLI idempotente por idade remove rows não vinculadas, quarentenas e arquivos gerados sem referência; possui dry-run, proteção de path e testes de falha. |
+| Transacao de anexos | Envio com anexos nao deixa orfaos. | Falha de `sendMessage` aciona compensacao ou endpoint unico. | Concluido — o frontend usa um único `POST /chat/messages` multipart; staging, vínculo e mensagens compartilham o commit, com rollback/compensação física. |
 
 Fluxo alvo para mensagem com anexos:
 
@@ -61,20 +64,20 @@ sequenceDiagram
 | Timeout do gateway | Requests nao ficam presos. | Teste simula provider lento e retorna erro controlado. | Concluido — `CHAT_GATEWAY_TIMEOUT_SECONDS` (default 30s) passado ao `ChatOpenAI`. |
 | Rate limit | Protecao de custo e abuso. | Limite por usuario/IP com resposta 429. | Concluido — flask-limiter, 20/min por IP em `/chat/messages` (default global 200/min). Limitacao conhecida: contador em memoria por processo, nao exato sob multiplos workers do Gunicorn sem Redis. |
 | Streaming real | UI recebe tokens do provedor quando suportado. | E2E ou teste de contrato valida SSE real. | Aberto — a rota SSE ainda reproduz uma mensagem ja persistida, nao `stream=True` do provedor. |
-| Logs estruturados | Requests correlacionaveis. | Cada log contem request_id, route, status, duration_ms. | Concluido (parcial) — `request_id` gerado/ecoado e correlacionado em todo log via filtro; `LOG_LEVEL` agora aplicado globalmente. Faltam `route`/`duration_ms` por linha. |
-| Metricas | Operacao basica mensuravel. | Expor endpoint/collector para latencia, erros e chamadas LLM. | Aberto. |
+| Logs estruturados | Requests correlacionaveis. | Evento de conclusao contem request_id, method, path, status e duration_ms. | Concluido — IDs externos sao validados, logs filhos recebem o filtro e cada request emite `request_completed` com duracao. Logs de dominio continuam livres para campos proprios. |
+| Metricas | Operacao basica mensuravel. | Expor endpoint/collector para latencia, erros e chamadas LLM. | Concluido — `/metrics` Prometheus cobre requests/status/latência e chamadas/duração do gateway, com labels limitadas e agregação multiprocess no Gunicorn. |
 
 ## P3 - Evolucao de produto e DX
 
 | Item | Resultado esperado | Criterio de aceite | Status |
 | --- | --- | --- | --- |
-| Refatorar `App.tsx` | Codigo modular e testavel. | Views/hooks extraidos; coverage inclui logica movida. | Aberto — permanece o maior item pendente do roadmap. |
+| Refatorar `App.tsx` | Codigo modular e testavel. | Views/componentes extraidos; coverage inclui logica movida. | Concluido (primeira etapa) — aproximadamente 1.550 -> 462 linhas fisicas, com features de chat/livros/configuracoes extraidas e testadas. Hooks controladores sao uma evolucao, nao um bloqueio atual. |
 | Drawer acessivel | Navegacao mobile inclusiva. | Focus trap, Escape, `role=dialog`, testes de acessibilidade. | Concluido — `useDialogAccessibility` (hook proprio, testado). |
 | Alternativa ao swipe | Pin/delete por teclado. | Botoes/menu contextual com teste. | Concluido (Fase 1). |
 | Busca real de chats | Botao existente passa a funcionar. | Filtro por titulo/conteudo com testes. | Concluido — filtro por titulo; conteudo das mensagens fica para uma iteracao futura se houver demanda. |
 | Busca vetorial real | FAISS/embeddings opcionais funcionam. | Teste opcional com dependencia AI instalada. | Aberto. |
-| Localizacao PT-BR | Labels consistentes. | Datas relativas usam `Intl.RelativeTimeFormat('pt-BR')`. | Aberto. |
-| Cleanup de dependencias mortas | `package.json` reflete o que o codigo realmente usa. | `@tanstack/react-router` e `zod` (nenhum dos dois importado em lugar algum) removidos. | Concluido. |
+| Localizacao PT-BR | Labels consistentes. | Datas relativas usam `Intl.RelativeTimeFormat('pt-BR')`. | Concluido — datas, grupos temporais e metadados HTML em PT-BR. |
+| Cleanup de dependencias mortas | `package.json` reflete o que o codigo realmente usa. | Dependencias e utilitarios sem consumidores removidos. | Concluido — removidos `@tanstack/react-router`, `zod`, `class-variance-authority`, `@storybook/test`, `happy-dom`, `generateId` e `truncate`. |
 | Cleanup do microfone no unmount | `useAudioRecorder` nao deixa o microfone ligado. | Effect de cleanup testado com desmontagem durante gravacao. | Concluido. |
 
 ## Sequencia recomendada

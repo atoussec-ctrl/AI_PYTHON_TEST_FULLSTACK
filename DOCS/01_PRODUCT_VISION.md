@@ -43,7 +43,7 @@ Nao incluido ainda:
 - Billing, planos, controle de quota e auditoria por usuario.
 - Busca vetorial real persistida em FAISS para todo o acervo.
 - Streaming real token-a-token do provedor LLM.
-- Observabilidade completa (logs estruturados, `request_id` gerado, metricas).
+- Observabilidade completa (request ID e log de duracao ja existem; faltam metricas e tracing distribuido).
 
 Ja incluido desde a auditoria inicial: WSGI de producao (Gunicorn) e autenticacao minima por API key, com guarda que falha o boot em producao se os segredos nao forem configurados.
 

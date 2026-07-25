@@ -15,6 +15,7 @@ Este pacote documenta a codebase fullstack atual, as escolhas tecnicas, os fluxo
 | [34_CODEBASE_AUDIT.md](34_CODEBASE_AUDIT.md) | Ler achados de arquitetura, seguranca, qualidade e operacao. |
 | [35_TECH_DECISIONS_TRADEOFFS.md](35_TECH_DECISIONS_TRADEOFFS.md) | Entender por que cada tecnologia foi escolhida e seus tradeoffs. |
 | [36_IMPROVEMENT_ROADMAP.md](36_IMPROVEMENT_ROADMAP.md) | Priorizar fixes e evolucoes por impacto. |
+| [37_CLEAN_ARCHITECTURE_REVIEW_2026-07-24.md](37_CLEAN_ARCHITECTURE_REVIEW_2026-07-24.md) | Ver a revisao profunda mais recente, mudancas aplicadas, metricas e riscos residuais. |
 
 ## Resumo executivo
 
@@ -22,20 +23,20 @@ MindSight AI e um monorepo com backend Flask e frontend React/Vite. A aplicacao 
 
 O projeto esta bem estruturado para um MVP/teste tecnico: ha separacao de rotas, servicos e repositorios no backend; o frontend isola cliente HTTP, componentes de chat e hooks; e existe uma suite relevante de testes unitarios.
 
-Os principais gaps para evoluir de MVP local para produto operavel sao:
+Os principais gaps residuais para evoluir de MVP local para produto operavel sao:
 
-- Autenticacao/autorizacao e ownership de dados.
-- Uso de servidor WSGI em producao; `run.py` ja exige `FLASK_DEBUG=true` para ligar debug.
-- Migracoes versionadas em vez de `db.create_all()` e `ALTER TABLE` no startup.
-- Hardening de uploads e transacionalidade de anexos; a delecao de sessao ja remove arquivos fisicos vinculados.
-- Paginacao, rate limit e timeouts explicitos para chamadas LLM.
-- Contrato OpenAPI alinhado ao comportamento real.
-- Observabilidade com request id gerado, logs estruturados e metricas.
-- Refatoracao do `frontend/src/App.tsx`, hoje concentrando muitas responsabilidades.
+- Autenticacao por usuario e ownership antes de um deploy publico/multiusuario; a API key atual e um segredo unico de operador.
+- AV/CDR e parsing preemptivamente isolado se uploads forem expostos a usuarios nao confiaveis; assinatura, limites e quarentena ja existem.
+- Validacao automatica de respostas Python contra o OpenAPI se o contrato crescer; os tipos TypeScript ja sao gerados e verificados.
+- Streaming real do provedor, retry com backoff e metricas de operacao/LLM.
+- Busca semantica sobre o acervo real; o endpoint atual e uma demonstracao por hashing.
+- Evoluir a raiz de composicao do frontend para hooks controladores apenas se os fluxos voltarem a crescer.
+
+Ja estao implementados: Gunicorn, migracoes Alembic, paginacao, timeout e rate limit do chat, request ID com log de duracao, validacao estrita de payloads, hardening de uploads/PDF, tipos gerados do OpenAPI, smoke full-stack no CI, modularizacao do frontend e gates de cobertura sobre todo o codigo executavel.
 
 ## Estado da auditoria
 
-Auditoria feita em 2026-07-03, considerando o estado local do workspace. Havia mudancas locais preexistentes em `.gitignore`, `backend/app/config.py`, `backend/app/services/observability.py` e arquivos novos de execucao; essas mudancas foram preservadas.
+Auditoria original feita em 2026-07-03 e revisada em 2026-07-24 sobre o estado local do workspace.
 
 Verificacoes executadas:
 
@@ -43,5 +44,8 @@ Verificacoes executadas:
 - Backend: `compileall app` passou.
 - Frontend: `pnpm typecheck` passou.
 - Frontend: `pnpm lint` passou.
-- Frontend: `pnpm test` passou com 9 arquivos e 64 testes.
-- Backend pytest foi tentado, mas no sandbox falhou no setup por permissao de criacao de diretorio temporario. O comando recomendado e `backend/.venv/Scripts/python.exe -m pytest -q --basetemp <diretorio gravavel>`.
+- Frontend: `pnpm test:coverage` passou com 19 arquivos e 109 testes; 86.08% de linhas no escopo completo.
+- Frontend: Playwright passou com 5 cenarios e pulou 1 cenario mobile-only no projeto desktop.
+- Full-stack: Playwright passou 1 jornada real via Vite proxy, Flask e SQLite de teste.
+- Backend: 305 testes passaram sem warnings; cobertura 98.67% com gate de 95%.
+- Docker: as imagens de backend e frontend foram compiladas com sucesso.

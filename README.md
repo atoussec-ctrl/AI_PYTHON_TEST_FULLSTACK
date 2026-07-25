@@ -1,8 +1,8 @@
 # MindSight AI
 
-Assistente fullstack de chat com IA focado em **Python**, com biblioteca virtual de livros, busca semântica e interface moderna inspirada em aplicações de chat com IA.
+Assistente fullstack de chat com IA focado em **Python**, com biblioteca virtual de livros, busca semântica demonstrativa e interface moderna inspirada em aplicações de chat com IA.
 
-O projeto atende aos requisitos de uma prova backend: API REST em Flask, chatbot com LangChain/LangSmith/OpenAI, embeddings com vector store e frontend React consumindo a API.
+O projeto atende aos requisitos de uma prova backend: API REST em Flask, gateway de chat com LangChain/OpenAI ou Hugging Face, observabilidade opcional com LangSmith e frontend React consumindo a API. O estado real e as limitações estão registrados na [auditoria de arquitetura](DOCS/37_CLEAN_ARCHITECTURE_REVIEW_2026-07-24.md).
 
 ---
 
@@ -46,7 +46,7 @@ O gateway de IA suporta três modos de operação:
 ### Chat com IA
 
 - Conversas com histórico persistido por sessão
-- Streaming de respostas via Server-Sent Events (SSE)
+- Reprodução progressiva via Server-Sent Events (SSE) de uma resposta já concluída pelo provedor
 - Modos de raciocínio: **rápido**, **equilibrado** e **profundo**
 - Seleção de modelo (OpenAI, DeepSeek via Hugging Face, etc.)
 - Renderização de Markdown com blocos de código e botão copiar
@@ -63,8 +63,9 @@ O gateway de IA suporta três modos de operação:
 
 ### Busca semântica
 
-- Endpoint `POST /api/v1/semantic-search` com embeddings e FAISS
-- Embeddings locais determinísticos no CI; modelos reais opcionais via `requirements-ai.txt`
+- Endpoint demonstrativo `POST /api/v1/semantic-search`
+- Vetores locais determinísticos por hashing sobre seis documentos fixos
+- O extra `requirements-ai.txt` instala dependências para uma evolução futura com FAISS/Sentence Transformers; o endpoint atual ainda não usa esse índice
 
 ### Anexos
 
@@ -72,6 +73,14 @@ O gateway de IA suporta três modos de operação:
 - Gravação de áudio via `MediaRecorder` no navegador
 - Validação de tipo e tamanho no frontend e backend
 - Texto extraído de anexos usado como contexto na resposta da IA
+- Envio multipart atômico: arquivos, vínculo e mensagens compartilham a unidade de trabalho
+- Backstop idempotente para órfãos de crash/abandono (`flask cleanup-uploads`)
+
+### Operação
+
+- Métricas Prometheus em `GET /metrics`, protegidas pela API key quando configurada
+- Contadores e histogramas HTTP/gateway com labels de cardinalidade limitada
+- Agregação multiprocess pronta para os dois workers Gunicorn do container
 
 ### Interface
 
@@ -89,7 +98,7 @@ O gateway de IA suporta três modos de operação:
 Usuário
   ↓
 Frontend (React + Vite + TypeScript)
-  ↓ REST / SSE
+  ↓ REST / SSE (reprodução da resposta persistida)
 Backend Flask (API /api/v1)
   ↓
 Serviços de aplicação (chat, livros, uploads, busca semântica)
@@ -98,7 +107,7 @@ Infraestrutura
   ├── SQLite (SQLAlchemy)
   ├── OpenAI / Hugging Face (LangChain)
   ├── LangSmith (tracing opcional)
-  └── FAISS (vector store)
+  └── Hashing local (busca demonstrativa; FAISS é evolução futura)
 ```
 
 **Modelos de dados:** `Book`, `ChatSession`, `ChatMessage`, `Attachment`
@@ -112,8 +121,10 @@ Infraestrutura
 
 **Frontend:**
 
-- `App.tsx` — shell principal (chat, livros, configurações)
-- `features/chat/` — componentes e hooks do chat
+- `App.tsx` — composição e coordenação dos fluxos principais
+- `features/chat/` — sidebar, cabeçalho, conversa, composer, hooks e configuração
+- `features/books/` — administração e cards de livros
+- `features/settings/` — preferências e credencial de sessão
 - `shared/api/` — cliente HTTP e tipos
 - `components/ui/` — componentes base (estilo shadcn/ui)
 
@@ -129,7 +140,7 @@ Infraestrutura
 | Flask 3.x | Framework web |
 | Flask-SQLAlchemy | ORM |
 | SQLite | Banco de dados |
-| Marshmallow | Validação/serialização |
+| Validadores internos | Validação de payloads HTTP e regras de entrada |
 | LangChain + LangChain-OpenAI | Integração com LLMs |
 | LangSmith | Tracing e feedback |
 | OpenAI API | Modelos GPT |
@@ -149,7 +160,6 @@ Infraestrutura
 | TanStack Query | Estado servidor / cache |
 | Framer Motion | Animações |
 | react-markdown + remark-gfm | Renderização Markdown |
-| Zod | Validação |
 | Vitest + Testing Library | Testes unitários |
 | Playwright | Testes E2E |
 | Storybook | Documentação de componentes |
@@ -175,16 +185,17 @@ mindsight/
 │   │   ├── models.py        # Modelos SQLAlchemy
 │   │   ├── repositories.py  # Acesso a dados
 │   │   └── config.py        # Configurações por ambiente
-│   ├── tests/               # Testes pytest (41 testes)
-│   ├── storage/             # SQLite, uploads, índice FAISS
-│   ├── requirements.txt     # Dependências core
-│   ├── requirements-ai.txt  # Dependências opcionais de IA/RAG
+│   ├── tests/               # Testes pytest com gate global de cobertura
+│   ├── openapi.json         # Contrato exportado e verificado contra a spec executável
+│   ├── storage/             # SQLite e uploads; path FAISS reservado
+│   ├── pyproject.toml       # Fonte única de dependências e configuração Python
+│   ├── requirements*.txt    # Wrappers de compatibilidade para os extras
 │   ├── run.py               # Entry-point do servidor
 │   └── seed.py              # Seed do catálogo de livros
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx          # Aplicação principal
-│   │   ├── features/        # Módulos de funcionalidade
+│   │   ├── App.tsx          # Raiz de composição
+│   │   ├── features/        # Chat, livros e configurações
 │   │   ├── shared/          # API client, utils, tipos
 │   │   └── components/ui/   # Componentes base
 │   ├── e2e/                 # Testes Playwright
@@ -204,7 +215,7 @@ mindsight/
 |------------|---------------|------------|
 | Python | 3.12+ | Com suporte a `venv` |
 | Node.js | 20+ (recomendado 24) | Inclui Corepack para `pnpm` |
-| pnpm | 9+ | `corepack enable` se o comando não existir |
+| pnpm | 10.34.5 | Fixado em `frontend/package.json` e alinhado entre Docker/CI/local |
 | Make | 4+ | Automação dos comandos abaixo |
 | Git | recente | Clone e versionamento |
 | curl | recente | Fallback do Makefile para bootstrap do pip |
@@ -223,7 +234,7 @@ Sem `python3-venv`, o `make install` ainda tenta um fallback (`venv --without-pi
 **Opcional:**
 
 - Docker e Docker Compose — ambiente containerizado
-- Google Chrome — exigido pelos testes E2E do Playwright (`channel: chrome`)
+- Chromium do Playwright — instalado com `pnpm exec playwright install chromium`
 - Chave `OPENAI_API_KEY` — respostas reais via OpenAI
 - Chave `HUGGINGFACE_API_KEY` — modelos DeepSeek via Hugging Face
 - Chave `LANGSMITH_API_KEY` — tracing (`LANGSMITH_TRACING=true`)
@@ -257,6 +268,13 @@ Verifique o backend:
 
 ```bash
 curl -s http://localhost:5000/api/v1/health
+```
+
+Consulte as métricas e simule a limpeza segura de uploads antigos:
+
+```bash
+curl -s http://localhost:5000/metrics
+make uploads-cleanup-dry-run
 ```
 
 Rodar a suíte de testes:
@@ -304,6 +322,10 @@ HF_CHAT_MODEL=deepseek-ai/DeepSeek-V4-Flash
 CHAT_GATEWAY=auto
 ```
 
+Se expuser modelos adicionais na UI, mantenha `VITE_CHAT_MODELS` e `ALLOWED_CHAT_MODELS` alinhados. O backend rejeita modelos não autorizados para evitar consumo acidental de modelos caros.
+
+Se `API_KEY` estiver configurada, informe-a no campo **Credencial da API** da tela de configurações. Ela fica apenas em `sessionStorage`; nunca use `VITE_API_KEY`, pois variáveis `VITE_*` são incorporadas ao bundle público. Para uma aplicação pública ou multiusuário, use autenticação por usuário e um proxy/BFF — a chave compartilhada atual não implementa identidade nem propriedade dos dados.
+
 4. (Opcional) Dependências extras de IA/RAG:
 
 ```bash
@@ -338,7 +360,7 @@ make dev
 |---------|-----|
 | Frontend | http://localhost:3002 |
 | Backend API | http://localhost:5000/api/v1 |
-| Health check | http://localhost:5000/health |
+| Health check | http://localhost:5000/api/v1/health |
 | OpenAPI / Swagger | http://localhost:5000/docs |
 
 Rodar apenas um serviço:
@@ -404,7 +426,7 @@ make test
 make backend-test
 ```
 
-Com cobertura mínima de 85%:
+Com cobertura mínima de 95%:
 
 ```bash
 make backend-test-cov
@@ -418,7 +440,7 @@ cd backend
 .venv/bin/ruff check app tests
 ```
 
-**Suíte atual:** 41 testes backend — health, livros, chat, anexos, busca semântica, OpenAPI, seed, pin/delete de sessões e seleção de gateway.
+**Suíte atual:** 305 testes backend — health, validação, livros, chat, anexos atômicos, limpeza de órfãos, métricas Prometheus, segurança de arquivos/PDF, busca semântica, OpenAPI, seed, configuração, rate limiting, observabilidade e seleção de gateway. Cobertura total: **98.67%**, com gate de 95%.
 
 ### Frontend (Vitest)
 
@@ -440,24 +462,30 @@ pnpm test          # execução única
 pnpm test:watch    # modo watch
 pnpm lint
 pnpm typecheck
+pnpm api:check     # garante que os tipos gerados refletem backend/openapi.json
 pnpm build
 ```
 
-**Suíte atual:** 9 arquivos, 43 testes unitários.
+**Suíte atual:** 19 arquivos, 109 testes. Cobertura: 86.08% lines, 82.40% functions, 81.50% branches e 84.50% statements sobre todo o código executável de produção; gates de 84%, 80%, 80% e 82%, respectivamente.
 
 ### E2E (Playwright)
 
 ```bash
 cd frontend
+pnpm exec playwright install chromium
 pnpm test:e2e
+pnpm test:e2e:fullstack
 ```
 
 Requisitos:
 
-- Google Chrome instalado no sistema (`channel: chrome` no Playwright)
-- Porta **3002** livre (o Playwright sobe `pnpm dev` automaticamente)
+- Chromium gerenciado pelo Playwright
+- Porta **3002** livre para os testes de UI; portas **3003** e **5001** livres para o smoke full-stack
+- Backend instalado em `backend/.venv` para execução local do smoke
 
-Resultado esperado: **5 passando**, **1 pulado** (cenário mobile-only no projeto desktop).
+Resultado esperado: testes de UI com **5 passando / 1 pulado** (cenário mobile-only no projeto desktop) e smoke full-stack com **1 passando**.
+
+`test:e2e` intercepta a API para validar a UI de forma rápida e determinística. `test:e2e:fullstack` sobe Vite e Flask, usa o proxy real e o gateway local, e confirma persistência em um SQLite de arquivo isolado sob `frontend/.cache`. O banco em arquivo evita interferência entre requisições concorrentes do servidor Flask que ocorreria com uma única conexão `:memory:`. O workflow `ci-fullstack.yml` executa essa jornada quando backend ou frontend mudam.
 
 ### Storybook
 
@@ -473,6 +501,7 @@ Abre em http://localhost:6006
 ```bash
 make lint       # Ruff (backend) + ESLint (frontend)
 make typecheck  # compileall (backend) + tsc (frontend)
+make api-check  # artefato OpenAPI + tipos TypeScript sem drift
 make build      # build de produção do frontend
 ```
 
@@ -480,7 +509,7 @@ make build      # build de produção do frontend
 
 ## API REST
 
-Base URL: `http://localhost:5000/api/v1`
+Base URL da API: `http://localhost:5000/api/v1`. A documentação é uma exceção e fica na raiz do servidor.
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
@@ -494,14 +523,16 @@ Base URL: `http://localhost:5000/api/v1`
 | `PATCH` | `/chat/sessions/{id}` | Fixar/desafixar sessão |
 | `DELETE` | `/chat/sessions/{id}` | Excluir sessão |
 | `GET` | `/chat/sessions/{id}/messages` | Mensagens da sessão |
-| `POST` | `/chat/messages` | Enviar mensagem |
-| `GET` | `/chat/messages/{id}/stream` | Stream SSE da resposta |
+| `POST` | `/chat/messages` | Enviar mensagem em JSON ou multipart atômico com arquivos |
+| `GET` | `/chat/messages/{id}/stream` | Reprodução SSE da resposta persistida |
 | `POST` | `/chat/messages/{id}/feedback` | Feedback LangSmith |
 | `POST` | `/attachments` | Upload de anexo |
 | `GET` | `/attachments/{id}` | Download de anexo |
-| `POST` | `/semantic-search` | Busca semântica |
-| `GET` | `/openapi.json` | Especificação OpenAPI |
-| `GET` | `/docs` | Documentação interativa |
+| `DELETE` | `/attachments/{id}` | Limpar upload legado ainda não vinculado |
+| `POST` | `/semantic-search` | Busca vetorial demonstrativa por hashing |
+| `GET` | `http://localhost:5000/metrics` | Métricas Prometheus |
+| `GET` | `http://localhost:5000/openapi.json` | Especificação OpenAPI |
+| `GET` | `http://localhost:5000/docs` | Documentação interativa |
 
 Contrato completo em [`DOCS/06_BACKEND_FLASK_API_CONTRACT.md`](DOCS/06_BACKEND_FLASK_API_CONTRACT.md).
 
@@ -517,6 +548,7 @@ A pasta [`DOCS/`](DOCS/) contém documentação técnica extensa:
 | [`DOCS/01_PRODUCT_VISION.md`](DOCS/01_PRODUCT_VISION.md) | Visão de produto e personas |
 | [`DOCS/05_SYSTEM_ARCHITECTURE.md`](DOCS/05_SYSTEM_ARCHITECTURE.md) | Arquitetura e princípios SOLID |
 | [`DOCS/33_IMPLEMENTATION_STATUS.md`](DOCS/33_IMPLEMENTATION_STATUS.md) | Status de implementação |
+| [`DOCS/37_CLEAN_ARCHITECTURE_REVIEW_2026-07-24.md`](DOCS/37_CLEAN_ARCHITECTURE_REVIEW_2026-07-24.md) | Auditoria de Clean Architecture, SOLID e pirâmide de testes |
 | [`DOCS/29_ENV_EXAMPLE.md`](DOCS/29_ENV_EXAMPLE.md) | Variáveis de ambiente |
 | [`DOCS/30_MAKEFILE_COMMANDS.md`](DOCS/30_MAKEFILE_COMMANDS.md) | Comandos do Makefile |
 
@@ -570,7 +602,7 @@ make docker-down    # se houver containers antigos
 
 ```bash
 corepack enable
-corepack prepare pnpm@latest --activate
+corepack prepare pnpm@10.34.5 --activate
 ```
 
 ### Frontend sem resposta da API
@@ -582,7 +614,7 @@ Confirme que o backend está no ar e que o proxy aponta para a porta correta:
 
 ### Testes E2E falham
 
-Instale o Google Chrome. Se a porta 3002 estiver ocupada, libere-a antes de rodar `pnpm test:e2e`.
+Execute `pnpm exec playwright install chromium`. Se a porta 3002 estiver ocupada, libere-a antes de rodar `pnpm test:e2e`.
 
 ---
 
