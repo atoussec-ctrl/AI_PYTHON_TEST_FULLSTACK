@@ -16,6 +16,7 @@ function renderApp() {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks()
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
@@ -195,7 +196,7 @@ it('filters books by category and switches to carousel layout', async () => {
   expect(screen.getByLabelText('Próximos livros')).toBeInTheDocument()
 })
 
-it('deletes a chat session after swipe left when row is armed', async () => {
+it('deletes a chat session through the accessible row action', async () => {
   let sessions = [
     {
       id: 'session_delete',
@@ -225,6 +226,69 @@ it('deletes a chat session after swipe left when row is armed', async () => {
   renderApp()
 
   expect(await screen.findByText('Conversa para apagar')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Excluir conversa' }))
+
+  await waitFor(() =>
+    expect(screen.queryByText('Conversa para apagar')).not.toBeInTheDocument(),
+  )
+})
+
+it('restores pending attachments when sending fails', async () => {
+  const createObjectUrl = vi
+    .spyOn(URL, 'createObjectURL')
+    .mockReturnValue('blob:preview')
+  const revokeObjectUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (url.includes('/chat/sessions') && method === 'POST') {
+        return Response.json({
+          id: 'session_attachment',
+          title: 'Conversa com anexos',
+          pinned: false,
+          pinned_at: null,
+          created_at: '2026-06-11T00:00:00Z',
+          updated_at: '2026-06-11T00:00:00Z',
+        })
+      }
+      if (url.includes('/attachments') && method === 'POST') {
+        return Response.json({
+          id: 'att_1',
+          filename: 'diagram.png',
+          mime_type: 'image/png',
+          size: 3,
+          kind: 'image',
+          url: '/api/v1/attachments/att_1',
+        })
+      }
+      if (url.includes('/attachments/att_1') && method === 'DELETE') {
+        return new Response(null, { status: 204 })
+      }
+      if (url.includes('/chat/messages') && method === 'POST') {
+        return new Response(
+          JSON.stringify({ error: { message: 'Falha temporária' } }),
+          { status: 500 },
+        )
+      }
+      return Response.json([])
+    }),
+  )
+
+  const { container } = renderApp()
+  const input = container.querySelector('input[type="file"]') as HTMLInputElement
+  const file = new File(['png'], 'diagram.png', { type: 'image/png' })
+
+  fireEvent.change(input, { target: { files: [file] } })
+  expect(await screen.findByRole('button', { name: 'Remover anexo' })).toBeInTheDocument()
+
+  fireEvent.click(screen.getByLabelText('Enviar mensagem'))
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Falha temporária')
+  expect(screen.getByRole('button', { name: 'Remover anexo' })).toBeInTheDocument()
+  expect(createObjectUrl).toHaveBeenCalledWith(file)
+  expect(revokeObjectUrl).not.toHaveBeenCalled()
 })
 
 it('reuses the same session when a failed send is retried', async () => {
@@ -351,8 +415,10 @@ it('clears the composer immediately and shows thinking while waiting for the mod
   expect(screen.getByText('Como usar listas?')).toBeInTheDocument()
   expect(screen.getByLabelText('Assistente pensando')).toBeInTheDocument()
   expect(screen.getByLabelText('Parar geração')).toBeInTheDocument()
+  expect(screen.getByLabelText('Anexar arquivo')).toBeDisabled()
 
-  resolveMessage?.(
+  await waitFor(() => expect(resolveMessage).toBeTypeOf('function'))
+  resolveMessage!(
     Response.json({
       user_message_id: 'msg_user',
       assistant_message_id: 'msg_assistant',
@@ -370,9 +436,12 @@ it('clears the composer immediately and shows thinking while waiting for the mod
     }),
   )
 
-  await waitFor(() =>
-    expect(screen.queryByLabelText('Assistente pensando')).not.toBeInTheDocument(),
+  await waitFor(
+    () => {
+      expect(screen.queryByLabelText('Assistente pensando')).not.toBeInTheDocument()
+      expect(screen.getByLabelText('Enviar mensagem')).toBeInTheDocument()
+      expect(screen.getByText('Use colchetes.')).toBeInTheDocument()
+    },
+    { timeout: 10_000 },
   )
-  expect(await screen.findByLabelText('Enviar mensagem')).toBeInTheDocument()
-  expect(await screen.findByText('Use colchetes.')).toBeInTheDocument()
 })

@@ -1,85 +1,21 @@
-export type ThinkingMode = 'fast' | 'balanced' | 'deep'
+import type { components } from './schema'
 
-export interface ChatSession {
-  id: string
-  title: string
-  pinned: boolean
-  pinned_at: string | null
-  created_at: string
-  updated_at: string
-}
+type ApiSchemas = components['schemas']
 
-export interface Book {
-  id: string
-  title: string
-  category: string
-  author: string
-  publication_date: string
-  publication_year: number
-  summary: string
-  created_at?: string
-}
+export type Attachment = ApiSchemas['Attachment']
+export type AttachmentKind = Attachment['kind']
+export type Book = ApiSchemas['Book']
+export type ChatMessage = ApiSchemas['ChatMessage']
+export type ChatSession = ApiSchemas['ChatSession']
+export type CreateBookInput = ApiSchemas['CreateBookRequest']
+export type ImportBookResponse = ApiSchemas['ImportBookResponse']
+export type SemanticSearchResult = ApiSchemas['SemanticSearchResponse']['results'][number]
+export type SendMessageResponse = ApiSchemas['SendMessageResponse']
+export type ThinkingMode = NonNullable<ChatMessage['thinking_mode']>
 
-export interface CreateBookInput {
-  title: string
-  category: string
-  author: string
-  publication_year: string
-  summary: string
-}
-
-export interface ImportBookResponse {
-  book: Book
-  extracted: {
-    title: string
-    category: string
-    author: string
-    publication_year: number
-    summary: string
-  }
-}
-
-export interface Attachment {
-  id: string
-  filename: string
-  mime_type: string
-  size: number
-  kind: AttachmentKind
-  url: string
-  created_at?: string
-}
-
-export type AttachmentKind = 'document' | 'image' | 'audio'
-
-export interface ChatMessage {
-  id: string
-  session_id: string
-  role: 'user' | 'assistant' | 'system'
-  content: string
-  thinking_mode?: ThinkingMode
-  status: 'pending' | 'streaming' | 'completed' | 'failed'
-  attachments: Attachment[]
-  created_at: string
-}
-
-export interface SendMessageInput {
-  session_id: string
-  content: string
+// The API makes thinking_mode optional and defaults it server-side. The UI
+// deliberately requires an explicit choice so its state and rendered badge
+// cannot silently diverge from the request it sent.
+export type SendMessageInput = ApiSchemas['SendMessageRequest'] & {
   thinking_mode: ThinkingMode
-  attachment_ids?: string[]
-  model?: string
-}
-
-export interface SendMessageResponse {
-  user_message_id: string
-  assistant_message_id: string
-  status: string
-  assistant_message: ChatMessage
-}
-
-export interface SemanticSearchResult {
-  document_id: string
-  title: string
-  score: number
-  excerpt: string
 }

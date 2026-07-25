@@ -1,110 +1,48 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import {
-  BookOpen,
-  Bot,
-  Calendar,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  FileAudio,
-  FileCode2,
-  FileText,
-  GalleryHorizontal,
-  ImageIcon,
-  LayoutGrid,
-  Menu,
-  Mic,
-  Moon,
-  PanelLeftClose,
-  Paperclip,
-  Plus,
-  Search,
-  SendHorizontal,
-  Settings2,
-  Sparkles,
-  Square,
-  Sun,
-  UserRound,
-  X,
-} from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
+import { resolveTheme, type AppTheme, type AppView } from '@/app/types'
+import { BooksAdminView } from '@/features/books/BooksAdminView'
 import {
   type PendingAttachment,
   revokePendingAttachment,
   validateFiles,
 } from '@/features/chat/attachments'
-import { ChatSessionRow } from '@/features/chat/ChatSessionRow'
-import { sendMessageWithAttachments } from '@/features/chat/sendMessageWithAttachments'
-import { ThinkingIndicator } from '@/features/chat/ThinkingIndicator'
-import { useAudioRecorder } from '@/features/chat/useAudioRecorder'
-import { useSessionSwipeGesture } from '@/features/chat/useSessionSwipeGesture'
+import { ChatComposer } from '@/features/chat/ChatComposer'
 import {
-  createBook,
+  ChatConversation,
+  type OptimisticTurn,
+} from '@/features/chat/ChatConversation'
+import {
+  DEFAULT_CHAT_MODEL,
+  resolveThinkingMode,
+  type ChatModel,
+} from '@/features/chat/config'
+import { ChatHeader } from '@/features/chat/ChatHeader'
+import { ChatSidebar } from '@/features/chat/ChatSidebar'
+import { sendMessageWithAttachments } from '@/features/chat/sendMessageWithAttachments'
+import { useAudioRecorder } from '@/features/chat/useAudioRecorder'
+import { SettingsView } from '@/features/settings/SettingsView'
+import { useDialogAccessibility } from '@/hooks/useDialogAccessibility'
+import { useHandleMobileSideBar } from '@/hooks/useHandleMobileSideBar'
+import {
   createSession,
   deleteSession,
-  importBook,
-  listBooks,
   listMessages,
   listSessions,
   sendMessage,
   updateSessionPin,
 } from '@/shared/api/client'
-import type {
-  AttachmentKind,
-  Book,
-  ChatMessage,
-  ChatSession,
-  CreateBookInput,
-  ThinkingMode,
-} from '@/shared/api/types'
-import { useDialogAccessibility } from '@/hooks/useDialogAccessibility'
-import { useHandleMobileSideBar } from '@/hooks/useHandleMobileSideBar'
-import { cn, filterSessionsByQuery, formatFileSize, groupSessionsForSidebar } from '@/shared/lib/utils'
+import type { Book, ThinkingMode } from '@/shared/api/types'
+import {
+  filterSessionsByQuery,
+  groupSessionsForSidebar,
+} from '@/shared/lib/utils'
 
-const MODEL_OPTIONS = [
-  'deepseek-ai/DeepSeek-V4-Flash',
-  'deepseek-ai/DeepSeek-V4-Pro',
-  'gpt-4.1-mini',
-  'gpt-4.1',
-  'gpt-5-mini',
-  'gpt-5',
-] as const
-
-const THINKING_OPTIONS: Array<{
-  value: ThinkingMode
-  label: string
-  detail: string
-}> = [
-  { value: 'fast', label: 'Rápido', detail: 'direto' },
-  { value: 'balanced', label: 'Equilibrado', detail: 'exemplos' },
-  { value: 'deep', label: 'Profundo', detail: 'trade-offs' },
-]
-
-const SUGGESTIONS = [
-  'Como criar uma lista em Python?',
-  'Explique fixtures do pytest com exemplo',
-  'Como estruturar uma API Flask com SQLAlchemy?',
-  'Revise este erro de tipagem em Python',
-]
-
-const AssistantMarkdown = lazy(() => import('@/features/chat/AssistantMarkdown'))
-
-type AppView = 'chat' | 'books' | 'settings'
-
-type SendMessagePayload = {
+interface SendMessagePayload {
   content: string
   attachments: PendingAttachment[]
-}
-
-type OptimisticTurn = {
-  userContent: string
-  attachments: PendingAttachment[]
-  thinkingMode: ThinkingMode
 }
 
 function isAbortError(error: unknown): boolean {
@@ -119,27 +57,28 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const pendingAttachmentsRef = useRef<PendingAttachment[]>([])
+  const inFlightAttachmentsRef = useRef<PendingAttachment[]>([])
+
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
   const [composerValue, setComposerValue] = useState('')
   const [optimisticTurn, setOptimisticTurn] = useState<OptimisticTurn | null>(null)
-  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(
-    (import.meta.env.VITE_DEFAULT_THINKING_MODE as ThinkingMode) ?? 'balanced',
+  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(() =>
+    resolveThinkingMode(import.meta.env.VITE_DEFAULT_THINKING_MODE),
   )
-  const [model, setModel] = useState<(typeof MODEL_OPTIONS)[number]>(
-    'deepseek-ai/DeepSeek-V4-Flash',
+  const [model, setModel] = useState<ChatModel>(DEFAULT_CHAT_MODEL)
+  const [theme, setTheme] = useState<AppTheme>(() =>
+    resolveTheme(localStorage.getItem('mindsight-theme')),
   )
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    return (localStorage.getItem('mindsight-theme') as 'light' | 'dark') ?? 'light'
-  })
   const [activeView, setActiveView] = useState<AppView>('chat')
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([])
+  const [uiError, setUiError] = useState<string | null>(null)
+
   const mobileSidebar = useHandleMobileSideBar()
   const mobileDrawerRef = useDialogAccessibility<HTMLElement>(
     mobileSidebar.isOpen,
     mobileSidebar.handleClose,
   )
-  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([])
-  const pendingAttachmentsRef = useRef<PendingAttachment[]>([])
-  const [uiError, setUiError] = useState<string | null>(null)
   const audioRecorder = useAudioRecorder()
 
   const sessionsQuery = useQuery({
@@ -181,20 +120,22 @@ function App() {
     },
     onMutate: ({ content, attachments }) => {
       abortControllerRef.current = new AbortController()
+      inFlightAttachmentsRef.current = [...attachments]
       setOptimisticTurn({
         userContent: content.trim(),
         attachments: [...attachments],
         thinkingMode,
       })
       setComposerValue('')
-      attachments.forEach(revokePendingAttachment)
       setPendingAttachments([])
       setUiError(null)
       if (fileInputRef.current) {
         fileInputRef.current.value = ''
       }
     },
-    onSuccess: response => {
+    onSuccess: (response, variables) => {
+      variables.attachments.forEach(revokePendingAttachment)
+      inFlightAttachmentsRef.current = []
       setOptimisticTurn(null)
       setSelectedSessionId(response.assistant_message.session_id)
       setUiError(null)
@@ -204,8 +145,10 @@ function App() {
       })
     },
     onError: (error, variables) => {
+      inFlightAttachmentsRef.current = []
       setOptimisticTurn(null)
       setComposerValue(variables.content)
+      setPendingAttachments(variables.attachments)
       if (isAbortError(error)) {
         setUiError(null)
         return
@@ -288,7 +231,10 @@ function App() {
   }, [pendingAttachments])
 
   useEffect(() => {
-    return () => pendingAttachmentsRef.current.forEach(revokePendingAttachment)
+    return () => {
+      pendingAttachmentsRef.current.forEach(revokePendingAttachment)
+      inFlightAttachmentsRef.current.forEach(revokePendingAttachment)
+    }
   }, [])
 
   useEffect(() => {
@@ -470,38 +416,15 @@ function App() {
             />
           ) : (
             <section className="relative min-h-0 flex-1">
-              <div className="h-full overflow-y-auto px-4 pb-[180px] pt-8 sm:px-8">
-                <div className="mx-auto flex w-full max-w-[960px] flex-col gap-8">
-                  {messagesQuery.isLoading && selectedSessionId && !optimisticTurn ? (
-                    <MessageSkeleton />
-                  ) : messages.length > 0 || optimisticTurn ? (
-                    <>
-                      <MessageList messages={messages} />
-                      {optimisticTurn && (
-                        <>
-                          <OptimisticUserBubble turn={optimisticTurn} />
-                          <AnimatePresence>
-                            {sendMessageMutation.isPending && (
-                              <ThinkingIndicator
-                                modeLabel={
-                                  THINKING_OPTIONS.find(
-                                    item => item.value === optimisticTurn.thinkingMode,
-                                  )?.label ?? 'Equilibrado'
-                                }
-                              />
-                            )}
-                          </AnimatePresence>
-                        </>
-                      )}
-                      <div ref={messagesEndRef} />
-                    </>
-                  ) : (
-                    <EmptyState
-                      onUseSuggestion={suggestion => setComposerValue(suggestion)}
-                    />
-                  )}
-                </div>
-              </div>
+              <ChatConversation
+                isLoading={messagesQuery.isLoading}
+                hasSelectedSession={Boolean(selectedSessionId)}
+                messages={messages}
+                optimisticTurn={optimisticTurn}
+                isSending={sendMessageMutation.isPending}
+                messagesEndRef={messagesEndRef}
+                onUseSuggestion={setComposerValue}
+              />
 
               <ChatComposer
                 value={composerValue}
@@ -525,1118 +448,13 @@ function App() {
                 type="file"
                 multiple
                 accept=".txt,.md,.py,.json,.pdf,.png,.jpg,.jpeg,.webp,.webm,.wav,.mp3"
+                disabled={sendMessageMutation.isPending}
                 onChange={event => selectFiles(event.target.files)}
               />
             </section>
           )}
         </main>
       </div>
-    </div>
-  )
-}
-
-interface ChatSidebarProps {
-  pinnedSessions: ChatSession[]
-  groupedSessions: Array<{ label: string; items: ChatSession[] }>
-  selectedSessionId: string | null
-  activeView: AppView
-  isLoading: boolean
-  searchQuery: string
-  onSearchQueryChange: (query: string) => void
-  onNewChat: () => void
-  onOpenBooks: () => void
-  onOpenAssistant: () => void
-  onOpenSettings: () => void
-  onSelectSession: (sessionId: string) => void
-  onCloseSidebar: () => void
-  onDeleteSession: (sessionId: string) => Promise<void>
-  onPinSession: (sessionId: string, pinned: boolean) => Promise<ChatSession>
-  isDeletingSession: boolean
-  isPinningSession: boolean
-}
-
-function ChatSidebar({
-  pinnedSessions,
-  groupedSessions,
-  selectedSessionId,
-  activeView,
-  isLoading,
-  searchQuery,
-  onSearchQueryChange,
-  onNewChat,
-  onOpenBooks,
-  onOpenAssistant,
-  onOpenSettings,
-  onSelectSession,
-  onCloseSidebar,
-  onDeleteSession,
-  onPinSession,
-  isDeletingSession,
-  isPinningSession,
-}: ChatSidebarProps) {
-  const { armedSessionId, disarmSwipe, getRowHandlers } = useSessionSwipeGesture()
-  const [isSearchVisible, setIsSearchVisible] = useState(false)
-
-  async function handleDelete(sessionId: string) {
-    await onDeleteSession(sessionId)
-    disarmSwipe()
-  }
-
-  async function handlePin(session: ChatSession) {
-    await onPinSession(session.id, !session.pinned)
-    disarmSwipe()
-  }
-
-  function renderSessionRow(session: ChatSession) {
-    return (
-      <ChatSessionRow
-        key={session.id}
-        session={session}
-        isSelected={activeView === 'chat' && selectedSessionId === session.id}
-        isArmed={armedSessionId === session.id}
-        isDeleting={isDeletingSession}
-        isPinning={isPinningSession}
-        rowHandlers={getRowHandlers(session.id)}
-        onSelect={() => {
-          disarmSwipe()
-          onSelectSession(session.id)
-        }}
-        onDelete={() => handleDelete(session.id)}
-        onPin={() => handlePin(session)}
-        onDisarm={disarmSwipe}
-      />
-    )
-  }
-
-  return (
-    <div className="flex h-full flex-col">
-      <div className="flex h-16 items-center justify-between px-5">
-        <div className="flex items-center gap-2 text-lg font-semibold text-foreground">
-          <span className="grid h-8 w-8 place-items-center rounded-md bg-primary text-primary-foreground">
-            <Bot size={18} />
-          </span>
-          MindSight
-        </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="lg:hidden"
-          aria-label="Fechar menu"
-          onClick={onCloseSidebar}
-        >
-          <PanelLeftClose size={18} />
-        </Button>
-      </div>
-
-      <div className="space-y-1 px-3">
-        <SidebarButton
-          icon={<Plus size={18} />}
-          label="Novo chat"
-          onClick={() => {
-            disarmSwipe()
-            onNewChat()
-          }}
-        />
-        <SidebarButton
-          icon={<Search size={18} />}
-          label="Buscar chats"
-          active={isSearchVisible}
-          onClick={() => {
-            setIsSearchVisible(current => {
-              const next = !current
-              if (!next) onSearchQueryChange('')
-              return next
-            })
-          }}
-        />
-        {isSearchVisible ? (
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={event => onSearchQueryChange(event.target.value)}
-            placeholder="Buscar por título..."
-            aria-label="Buscar chats"
-            autoFocus
-            className="h-9 w-full rounded-md border border-sidebar-border bg-sidebar-accent/40 px-3 text-sm text-sidebar-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        ) : null}
-        <SidebarButton
-          active={activeView === 'books'}
-          icon={<BookOpen size={18} />}
-          label="Biblioteca"
-          onClick={onOpenBooks}
-        />
-        <SidebarButton
-          active={activeView === 'chat'}
-          icon={<Sparkles size={18} />}
-          label="Python Assistant"
-          onClick={onOpenAssistant}
-        />
-        <SidebarButton
-          active={activeView === 'settings'}
-          icon={<Settings2 size={18} />}
-          label="Configurações"
-          onClick={onOpenSettings}
-        />
-      </div>
-
-      <div className="mt-6 min-h-0 flex-1 overflow-y-auto px-3">
-        {isLoading ? (
-          <div className="space-y-2">
-            <div className="h-9 rounded-md bg-sidebar-accent" />
-            <div className="h-9 rounded-md bg-sidebar-accent" />
-          </div>
-        ) : pinnedSessions.length > 0 || groupedSessions.length > 0 ? (
-          <>
-            {pinnedSessions.length > 0 ? (
-              <div className="mb-4">
-                <p className="mb-2 px-2 text-sm font-semibold text-foreground">Fixados</p>
-                {pinnedSessions.map(renderSessionRow)}
-              </div>
-            ) : null}
-
-            <p className="mb-2 px-2 text-sm font-semibold text-foreground">Recentes</p>
-            {groupedSessions.map(group => (
-              <div className="mb-4" key={group.label}>
-                <p className="mb-1 px-2 text-xs text-muted-foreground">{group.label}</p>
-                {group.items.map(renderSessionRow)}
-              </div>
-            ))}
-          </>
-        ) : (
-          <p className="px-2 text-sm text-muted-foreground">
-            {searchQuery.trim() ? 'Nenhuma conversa encontrada.' : 'Nenhuma conversa ainda.'}
-          </p>
-        )}
-      </div>
-
-      <div className="flex items-center gap-3 border-t border-sidebar-border p-4">
-        <div className="grid h-9 w-9 place-items-center rounded-full bg-emerald-500 text-sm font-semibold text-white">
-          MS
-        </div>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-foreground">Python Team</p>
-          <p className="text-xs text-muted-foreground">Workspace local</p>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function SidebarButton({
-  icon,
-  label,
-  active = false,
-  onClick,
-}: {
-  icon: React.ReactNode
-  label: string
-  active?: boolean
-  onClick?: () => void
-}) {
-  return (
-    <button
-      className={cn(
-        'flex h-10 w-full items-center gap-3 rounded-md px-2 text-sm text-sidebar-foreground transition hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
-        active && 'bg-sidebar-accent text-sidebar-accent-foreground',
-      )}
-      onClick={onClick}
-    >
-      {icon}
-      <span>{label}</span>
-    </button>
-  )
-}
-
-function SettingsView({
-  theme,
-  model,
-  thinkingMode,
-  onThemeToggle,
-  onModelChange,
-  onThinkingChange,
-}: {
-  theme: 'light' | 'dark'
-  model: (typeof MODEL_OPTIONS)[number]
-  thinkingMode: ThinkingMode
-  onThemeToggle: () => void
-  onModelChange: (model: (typeof MODEL_OPTIONS)[number]) => void
-  onThinkingChange: (mode: ThinkingMode) => void
-}) {
-  return (
-    <section className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-      <div className="mx-auto w-full max-w-2xl space-y-4">
-        <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
-          <h2 className="text-base font-semibold">Aparência</h2>
-          <div className="mt-4 flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-medium">Tema</p>
-              <p className="text-xs text-muted-foreground">
-                Alterna entre claro e escuro. A preferência fica salva neste navegador.
-              </p>
-            </div>
-            <Button variant="soft" aria-label="Alternar tema nas configurações" onClick={onThemeToggle}>
-              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-              {theme === 'dark' ? 'Claro' : 'Escuro'}
-            </Button>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
-          <h2 className="text-base font-semibold">Assistente</h2>
-          <label className="mt-4 block">
-            <span className="mb-1 block text-sm font-medium">Modelo padrão</span>
-            <select
-              aria-label="Modelo padrão"
-              className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              value={model}
-              onChange={event =>
-                onModelChange(event.target.value as (typeof MODEL_OPTIONS)[number])
-              }
-            >
-              {MODEL_OPTIONS.map(option => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="mt-4 block">
-            <span className="mb-1 block text-sm font-medium">Modo de raciocínio</span>
-            <select
-              aria-label="Modo de raciocínio padrão"
-              className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              value={thinkingMode}
-              onChange={event => onThinkingChange(event.target.value as ThinkingMode)}
-            >
-              {THINKING_OPTIONS.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.label} — {option.detail}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
-          <h2 className="text-base font-semibold">Sobre</h2>
-          <dl className="mt-3 space-y-2 text-sm">
-            <div className="flex justify-between gap-4">
-              <dt className="text-muted-foreground">Aplicação</dt>
-              <dd className="font-medium">
-                {import.meta.env.VITE_APP_NAME ?? 'MindSight AI'}
-              </dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-muted-foreground">API</dt>
-              <dd className="truncate font-mono text-xs">
-                {import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5000/api/v1'}
-              </dd>
-            </div>
-          </dl>
-        </div>
-      </div>
-    </section>
-  )
-}
-
-type BooksLayout = 'grid' | 'carousel'
-
-function BooksAdminView({
-  actionError,
-  isAskingBook,
-  onAskBook,
-}: {
-  actionError: string | null
-  isAskingBook: boolean
-  onAskBook: (book: Book) => void
-}) {
-  const queryClient = useQueryClient()
-  const importInputRef = useRef<HTMLInputElement | null>(null)
-  const carouselRef = useRef<HTMLDivElement | null>(null)
-  const [search, setSearch] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState('')
-  const [authorFilter, setAuthorFilter] = useState('')
-  const [layout, setLayout] = useState<BooksLayout>('grid')
-  const [form, setForm] = useState<CreateBookInput>({
-    title: '',
-    category: 'Programação',
-    author: '',
-    publication_year: '',
-    summary: '',
-  })
-  const [importedBookTitle, setImportedBookTitle] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  const booksQuery = useQuery({
-    queryKey: ['books', search, categoryFilter, authorFilter],
-    queryFn: () =>
-      listBooks({ q: search, category: categoryFilter, author: authorFilter }),
-  })
-
-  // Catálogo completo apenas para montar as opções dos filtros.
-  const allBooksQuery = useQuery({
-    queryKey: ['books', 'all'],
-    queryFn: () => listBooks(),
-  })
-  const filterOptions = useMemo(() => {
-    const catalog = allBooksQuery.data ?? []
-    return {
-      categories: [...new Set(catalog.map(book => book.category))].sort(),
-      authors: [...new Set(catalog.map(book => book.author))].sort(),
-    }
-  }, [allBooksQuery.data])
-
-  function scrollCarousel(direction: 1 | -1) {
-    const node = carouselRef.current
-    if (!node) return
-    node.scrollBy({ left: direction * node.clientWidth * 0.9, behavior: 'smooth' })
-  }
-
-  const createBookMutation = useMutation({
-    mutationFn: createBook,
-    onSuccess: () => {
-      setForm({
-        title: '',
-        category: 'Programação',
-        author: '',
-        publication_year: '',
-        summary: '',
-      })
-      setError(null)
-      queryClient.invalidateQueries({ queryKey: ['books'] })
-    },
-    onError: mutationError => {
-      setError(
-        mutationError instanceof Error
-          ? mutationError.message
-          : 'Falha ao cadastrar livro.',
-      )
-    },
-  })
-
-  const importBookMutation = useMutation({
-    mutationFn: importBook,
-    onSuccess: response => {
-      setImportedBookTitle(response.book.title)
-      setError(null)
-      queryClient.invalidateQueries({ queryKey: ['books'] })
-      if (importInputRef.current) {
-        importInputRef.current.value = ''
-      }
-    },
-    onError: mutationError => {
-      setImportedBookTitle(null)
-      setError(
-        mutationError instanceof Error
-          ? mutationError.message
-          : 'Falha ao importar livro.',
-      )
-    },
-  })
-
-  function updateForm(field: keyof CreateBookInput, value: string) {
-    setForm(current => ({ ...current, [field]: value }))
-  }
-
-  function submitBook(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    createBookMutation.mutate(form)
-  }
-
-  const books = booksQuery.data ?? []
-
-  return (
-    <section className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8">
-      <div className="mx-auto grid w-full max-w-6xl gap-6 xl:grid-cols-[380px_1fr]">
-        <form
-          className="h-fit rounded-lg border border-border bg-card p-4 shadow-sm"
-          onSubmit={submitBook}
-        >
-          <div className="mb-4">
-            <h2 className="text-base font-semibold">Administração</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Cadastre livros manualmente ou importe um arquivo com metadados.
-            </p>
-          </div>
-
-          {actionError && (
-            <div
-              className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-              role="alert"
-            >
-              {actionError}
-            </div>
-          )}
-
-          <div className="mb-5 rounded-md border border-border bg-secondary/45 p-3">
-            <p className="text-sm font-medium">Importar livro com IA</p>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              Envie `.txt`, `.md`, `.json` ou `.pdf` contendo título, autor, categoria,
-              ano e resumo. O backend extrai e cadastra o livro automaticamente.
-            </p>
-            <div className="mt-3 flex gap-2">
-              <input
-                ref={importInputRef}
-                aria-label="Upload de livro"
-                className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
-                type="file"
-                accept=".txt,.md,.json,.pdf"
-                onChange={event => {
-                  const file = event.target.files?.[0]
-                  if (file) importBookMutation.mutate(file)
-                }}
-              />
-            </div>
-            {importBookMutation.isPending && (
-              <p className="mt-2 text-xs text-muted-foreground">Extraindo metadados...</p>
-            )}
-            {importedBookTitle && (
-              <p className="mt-2 text-xs text-emerald-600">
-                Livro importado: {importedBookTitle}
-              </p>
-            )}
-          </div>
-
-          <label className="mb-3 block">
-            <span className="mb-1 block text-sm font-medium">Título</span>
-            <input
-              className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              value={form.title}
-              onChange={event => updateForm('title', event.target.value)}
-              placeholder="Python Fluente"
-            />
-          </label>
-
-          <label className="mb-3 block">
-            <span className="mb-1 block text-sm font-medium">Categoria</span>
-            <input
-              className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              value={form.category}
-              onChange={event => updateForm('category', event.target.value)}
-              placeholder="Programação"
-            />
-          </label>
-
-          <label className="mb-3 block">
-            <span className="mb-1 block text-sm font-medium">Autor</span>
-            <input
-              className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              value={form.author}
-              onChange={event => updateForm('author', event.target.value)}
-              placeholder="Luciano Ramalho"
-            />
-          </label>
-
-          <label className="mb-3 block">
-            <span className="mb-1 block text-sm font-medium">Ano de publicação</span>
-            <input
-              className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              value={form.publication_year}
-              onChange={event => updateForm('publication_year', event.target.value)}
-              inputMode="numeric"
-              placeholder="2015"
-            />
-          </label>
-
-          <label className="mb-4 block">
-            <span className="mb-1 block text-sm font-medium">Resumo</span>
-            <Textarea
-              className="min-h-28 rounded-md border border-border bg-background px-3 py-2 text-sm focus:ring-2 focus:ring-ring"
-              value={form.summary}
-              onChange={event => updateForm('summary', event.target.value)}
-              placeholder="Descreva o conteúdo do livro para a IA usar como fonte."
-            />
-          </label>
-
-          {error && (
-            <div
-              className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-              role="alert"
-            >
-              {error}
-            </div>
-          )}
-
-          <Button className="w-full" disabled={createBookMutation.isPending}>
-            {createBookMutation.isPending ? 'Salvando...' : 'Cadastrar livro'}
-          </Button>
-        </form>
-
-        <div className="min-w-0">
-          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-base font-semibold">Consulta de livros</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Busque por título, autor ou termos do resumo. A IA usa esses registros
-                como contexto local.
-              </p>
-            </div>
-            <label className="relative block sm:w-[320px]">
-              <Search
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-                size={17}
-              />
-              <input
-                aria-label="Buscar livros"
-                className="h-10 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-                value={search}
-                onChange={event => setSearch(event.target.value)}
-                placeholder="Buscar livros"
-              />
-            </label>
-          </div>
-
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            <select
-              aria-label="Filtrar por categoria"
-              className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-              value={categoryFilter}
-              onChange={event => setCategoryFilter(event.target.value)}
-            >
-              <option value="">Todas as categorias</option>
-              {filterOptions.categories.map(category => (
-                <option key={category} value={category}>
-                  {category}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label="Filtrar por autor"
-              className="h-9 rounded-md border border-border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring"
-              value={authorFilter}
-              onChange={event => setAuthorFilter(event.target.value)}
-            >
-              <option value="">Todos os autores</option>
-              {filterOptions.authors.map(author => (
-                <option key={author} value={author}>
-                  {author}
-                </option>
-              ))}
-            </select>
-            {(categoryFilter || authorFilter || search) && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setSearch('')
-                  setCategoryFilter('')
-                  setAuthorFilter('')
-                }}
-              >
-                <X size={14} />
-                Limpar filtros
-              </Button>
-            )}
-            <div className="ml-auto flex items-center gap-1 rounded-md border border-border p-0.5">
-              <Button
-                variant={layout === 'grid' ? 'soft' : 'ghost'}
-                size="icon"
-                aria-label="Layout em grade"
-                onClick={() => setLayout('grid')}
-              >
-                <LayoutGrid size={16} />
-              </Button>
-              <Button
-                variant={layout === 'carousel' ? 'soft' : 'ghost'}
-                size="icon"
-                aria-label="Layout carrossel"
-                onClick={() => setLayout('carousel')}
-              >
-                <GalleryHorizontal size={16} />
-              </Button>
-            </div>
-          </div>
-
-          {booksQuery.isLoading ? (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="h-56 rounded-lg bg-secondary animate-shimmer" />
-              <div className="h-56 rounded-lg bg-secondary animate-shimmer" />
-            </div>
-          ) : books.length > 0 ? (
-            layout === 'grid' ? (
-              <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
-                {books.map(book => (
-                  <BookCard
-                    key={book.id}
-                    book={book}
-                    isAskingBook={isAskingBook}
-                    onAskBook={() => onAskBook(book)}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="relative">
-                <div
-                  ref={carouselRef}
-                  aria-label="Carrossel de livros"
-                  className="flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth pb-3"
-                >
-                  {books.map(book => (
-                    <div key={book.id} className="w-[290px] shrink-0 snap-start sm:w-[320px]">
-                      <BookCard
-                        book={book}
-                        isAskingBook={isAskingBook}
-                        onAskBook={() => onAskBook(book)}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-1 flex justify-end gap-2">
-                  <Button
-                    variant="soft"
-                    size="icon"
-                    aria-label="Livros anteriores"
-                    onClick={() => scrollCarousel(-1)}
-                  >
-                    <ChevronLeft size={17} />
-                  </Button>
-                  <Button
-                    variant="soft"
-                    size="icon"
-                    aria-label="Próximos livros"
-                    onClick={() => scrollCarousel(1)}
-                  >
-                    <ChevronRight size={17} />
-                  </Button>
-                </div>
-              </div>
-            )
-          ) : (
-            <div className="rounded-lg border border-dashed border-border p-8 text-center">
-              <BookOpen className="mx-auto mb-3 text-muted-foreground" size={28} />
-              <p className="font-medium">Nenhum livro encontrado</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Cadastre um livro ou ajuste a busca.
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
-    </section>
-  )
-}
-
-function BookCard({
-  book,
-  isAskingBook,
-  onAskBook,
-}: {
-  book: Book
-  isAskingBook: boolean
-  onAskBook: () => void
-}) {
-  return (
-    <article className="flex h-full flex-col rounded-lg border border-border bg-card p-4 shadow-sm transition hover:shadow-md">
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <Badge>{book.category}</Badge>
-        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-          <Calendar size={13} />
-          {book.publication_year}
-        </span>
-      </div>
-      <h3 className="text-base font-semibold leading-snug">{book.title}</h3>
-      <p className="mt-1 inline-flex items-center gap-1 text-sm text-muted-foreground">
-        <UserRound size={14} />
-        {book.author}
-      </p>
-      <p className="mt-2 line-clamp-4 flex-1 text-sm leading-6 text-muted-foreground">
-        {book.summary}
-      </p>
-      <Button
-        className="mt-4 w-full"
-        disabled={isAskingBook}
-        variant="soft"
-        onClick={onAskBook}
-      >
-        <Sparkles size={16} />
-        Perguntar à IA
-      </Button>
-    </article>
-  )
-}
-
-interface ChatHeaderProps {
-  title: string
-  model: string
-  thinkingMode: ThinkingMode
-  theme: 'light' | 'dark'
-  isMobileSidebarOpen: boolean
-  onToggleSidebar: () => void
-  onModelChange: (model: (typeof MODEL_OPTIONS)[number]) => void
-  onThinkingChange: (mode: ThinkingMode) => void
-  onThemeToggle: () => void
-}
-
-function ChatHeader({
-  title,
-  model,
-  thinkingMode,
-  theme,
-  isMobileSidebarOpen,
-  onToggleSidebar,
-  onModelChange,
-  onThinkingChange,
-  onThemeToggle,
-}: ChatHeaderProps) {
-  return (
-    <header className="flex h-16 shrink-0 items-center justify-between border-b border-border px-3 sm:px-5">
-      <div className="flex min-w-0 items-center gap-2">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="lg:hidden"
-          aria-label={isMobileSidebarOpen ? 'Fechar menu' : 'Abrir menu'}
-          onClick={onToggleSidebar}
-        >
-          {isMobileSidebarOpen ? <X size={20} /> : <Menu size={20} />}
-        </Button>
-        <div className="min-w-0">
-          <h1 className="truncate text-base font-semibold">{title}</h1>
-          <p className="hidden text-xs text-muted-foreground sm:block">
-            Assistente para Python, Flask, testes e arquitetura
-          </p>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <label className="hidden items-center gap-2 rounded-md border border-border px-2 py-1.5 text-sm sm:flex">
-          <span className="text-muted-foreground">Modelo</span>
-          <select
-            className="bg-transparent outline-none"
-            value={model}
-            onChange={event =>
-              onModelChange(event.target.value as (typeof MODEL_OPTIONS)[number])
-            }
-          >
-            {MODEL_OPTIONS.map(option => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-          <ChevronDown size={14} />
-        </label>
-
-        <label className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5 text-sm">
-          <span className="hidden text-muted-foreground sm:inline">Thinking</span>
-          <select
-            className="bg-transparent outline-none"
-            value={thinkingMode}
-            onChange={event => onThinkingChange(event.target.value as ThinkingMode)}
-          >
-            {THINKING_OPTIONS.map(option => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Alternar tema"
-          onClick={onThemeToggle}
-        >
-          {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-        </Button>
-      </div>
-    </header>
-  )
-}
-
-function EmptyState({ onUseSuggestion }: { onUseSuggestion: (value: string) => void }) {
-  return (
-    <motion.div
-      className="mx-auto flex min-h-[56vh] max-w-3xl flex-col items-center justify-center text-center"
-      initial={{ opacity: 0, y: 14 }}
-      animate={{ opacity: 1, y: 0 }}
-    >
-      <div className="mb-5 grid h-14 w-14 place-items-center rounded-xl border border-border bg-secondary">
-        <Sparkles size={24} />
-      </div>
-      <h2 className="text-2xl font-semibold sm:text-3xl">Como posso ajudar com Python?</h2>
-      <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground sm:text-base">
-        Envie uma pergunta, erro, arquivo de código, imagem ou áudio. O assistente
-        responde em português com foco em boas práticas.
-      </p>
-      <div className="mt-8 grid w-full gap-3 sm:grid-cols-2">
-        {SUGGESTIONS.map(suggestion => (
-          <button
-            key={suggestion}
-            className="rounded-lg border border-border bg-card px-4 py-3 text-left text-sm transition hover:bg-accent"
-            onClick={() => onUseSuggestion(suggestion)}
-          >
-            {suggestion}
-          </button>
-        ))}
-      </div>
-    </motion.div>
-  )
-}
-
-function OptimisticUserBubble({ turn }: { turn: OptimisticTurn }) {
-  return (
-    <motion.article
-      className="flex w-full justify-end"
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18 }}
-    >
-      <div className="max-w-[860px] rounded-2xl bg-secondary px-5 py-4 text-secondary-foreground sm:max-w-[72%]">
-        {turn.attachments.length > 0 && (
-          <div className="mb-3 flex flex-wrap gap-2">
-            {turn.attachments.map(attachment => (
-              <Badge key={attachment.id}>{attachment.file.name}</Badge>
-            ))}
-          </div>
-        )}
-        {turn.userContent ? (
-          <p className="whitespace-pre-wrap text-base leading-7">{turn.userContent}</p>
-        ) : (
-          <p className="text-sm text-muted-foreground">Enviando anexos...</p>
-        )}
-      </div>
-    </motion.article>
-  )
-}
-
-function MessageList({ messages }: { messages: ChatMessage[] }) {
-  return (
-    <div className="space-y-8" aria-live="polite">
-      {messages.map(message => (
-        <motion.article
-          key={message.id}
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.18 }}
-        >
-          <MessageBubble message={message} />
-        </motion.article>
-      ))}
-    </div>
-  )
-}
-
-function MessageBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === 'user'
-  return (
-    <div className={cn('flex w-full', isUser ? 'justify-end' : 'justify-start')}>
-      <div
-        className={cn(
-          'group relative max-w-[860px]',
-          isUser
-            ? 'rounded-2xl bg-secondary px-5 py-4 text-secondary-foreground sm:max-w-[72%]'
-            : 'w-full text-foreground',
-        )}
-      >
-        {!isUser && (
-          <div className="mb-3 flex items-center gap-2 text-sm font-medium">
-            <span className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground">
-              <Bot size={16} />
-            </span>
-            MindSight AI
-            {message.thinking_mode && (
-              <Badge>{THINKING_OPTIONS.find(item => item.value === message.thinking_mode)?.label}</Badge>
-            )}
-          </div>
-        )}
-
-        {message.attachments.length > 0 && (
-          <div className="mb-3 flex flex-wrap gap-2">
-            {message.attachments.map(attachment => (
-              <Badge key={attachment.id}>{attachment.filename}</Badge>
-            ))}
-          </div>
-        )}
-
-        <div className={cn(!isUser && 'prose-chat max-w-none')}>
-          {isUser ? (
-            <p className="whitespace-pre-wrap text-base leading-7">{message.content}</p>
-          ) : (
-            <Suspense
-              fallback={
-                <p className="text-sm text-muted-foreground">Carregando resposta...</p>
-              }
-            >
-              <AssistantMarkdown content={message.content} />
-            </Suspense>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-interface ChatComposerProps {
-  value: string
-  thinkingMode: ThinkingMode
-  model: string
-  attachments: PendingAttachment[]
-  error: string | null
-  isSending: boolean
-  isRecording: boolean
-  onChange: (value: string) => void
-  onSubmit: () => void
-  onStop: () => void
-  onAttachClick: () => void
-  onRemoveAttachment: (id: string) => void
-  onToggleRecording: () => void
-}
-
-function ChatComposer({
-  value,
-  thinkingMode,
-  model,
-  attachments,
-  error,
-  isSending,
-  isRecording,
-  onChange,
-  onSubmit,
-  onStop,
-  onAttachClick,
-  onRemoveAttachment,
-  onToggleRecording,
-}: ChatComposerProps) {
-  const activeThinking = THINKING_OPTIONS.find(item => item.value === thinkingMode)
-
-  return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-background via-background to-background/0 px-3 pb-3 pt-10 sm:px-6">
-      <div className="pointer-events-auto mx-auto w-full max-w-[960px]">
-        <AnimatePresence>
-          {attachments.length > 0 && (
-            <motion.div
-              className="mb-2 flex gap-2 overflow-x-auto"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 8 }}
-            >
-              {attachments.map(attachment => (
-                <AttachmentPreview
-                  key={attachment.id}
-                  attachment={attachment}
-                  onRemove={() => onRemoveAttachment(attachment.id)}
-                />
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {error && (
-          <div
-            className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
-
-        <div className="rounded-2xl border border-border bg-composer text-composer-foreground shadow-[0_12px_45px_rgba(0,0,0,0.12)]">
-          <Textarea
-            value={value}
-            placeholder="Pergunte alguma coisa"
-            rows={1}
-            className="max-h-44 px-5 pt-4"
-            onChange={event => onChange(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                onSubmit()
-              }
-            }}
-          />
-          <div className="flex items-center justify-between gap-2 px-3 pb-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <Button
-                variant="soft"
-                size="icon"
-                aria-label="Anexar arquivo"
-                onClick={onAttachClick}
-              >
-                <Paperclip size={18} />
-              </Button>
-              <Badge className="hidden max-w-[220px] truncate sm:inline-flex">
-                {model}
-              </Badge>
-              <Badge>{activeThinking?.label ?? 'Equilibrado'}</Badge>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Button
-                variant={isRecording ? 'danger' : 'soft'}
-                size="icon"
-                aria-label={isRecording ? 'Parar gravação' : 'Gravar áudio'}
-                className={isRecording ? 'animate-pulse-recording' : undefined}
-                onClick={onToggleRecording}
-              >
-                {isRecording ? <Square size={16} /> : <Mic size={18} />}
-              </Button>
-              <Button
-                variant={isSending ? 'danger' : 'default'}
-                size="icon"
-                aria-label={isSending ? 'Parar geração' : 'Enviar mensagem'}
-                onClick={isSending ? onStop : onSubmit}
-              >
-                {isSending ? <Square size={16} /> : <SendHorizontal size={18} />}
-              </Button>
-            </div>
-          </div>
-        </div>
-        <p className="mt-2 text-center text-xs text-muted-foreground">
-          O MindSight pode cometer erros. Confira informações relevantes.
-        </p>
-      </div>
-    </div>
-  )
-}
-
-function AttachmentPreview({
-  attachment,
-  onRemove,
-}: {
-  attachment: PendingAttachment
-  onRemove: () => void
-}) {
-  return (
-    <div className="flex min-w-[210px] items-center gap-3 rounded-lg border border-border bg-card p-2 shadow-sm">
-      <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-secondary">
-        {attachment.kind === 'image' && attachment.previewUrl ? (
-          <img
-            src={attachment.previewUrl}
-            alt=""
-            className="h-full w-full rounded-md object-cover"
-          />
-        ) : (
-          <AttachmentIcon kind={attachment.kind} />
-        )}
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium">{attachment.file.name}</p>
-        <p className="text-xs text-muted-foreground">
-          {attachment.kind} · {formatFileSize(attachment.file.size)}
-        </p>
-      </div>
-      <Button variant="ghost" size="icon" aria-label="Remover anexo" onClick={onRemove}>
-        <X size={16} />
-      </Button>
-    </div>
-  )
-}
-
-function AttachmentIcon({ kind }: { kind: AttachmentKind }) {
-  if (kind === 'image') return <ImageIcon size={18} />
-  if (kind === 'audio') return <FileAudio size={18} />
-  if (kind === 'document') return <FileText size={18} />
-  return <FileCode2 size={18} />
-}
-
-function MessageSkeleton() {
-  return (
-    <div className="space-y-8">
-      <div className="ml-auto h-24 max-w-[70%] rounded-2xl bg-secondary animate-shimmer" />
-      <div className="h-44 rounded-lg bg-secondary animate-shimmer" />
     </div>
   )
 }
