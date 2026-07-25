@@ -12,14 +12,13 @@ pattern used for the production-config guard tests.
 
 from __future__ import annotations
 
-from app import create_app
 from app.config import TestingConfig
 
 
-def _client_with_rate_limiting_enabled(monkeypatch, chat_limit="1 per hour"):
+def _client_with_rate_limiting_enabled(app_factory, monkeypatch, chat_limit="1 per hour"):
     monkeypatch.setattr(TestingConfig, "RATELIMIT_ENABLED", True)
     monkeypatch.setattr(TestingConfig, "RATE_LIMIT_CHAT_MESSAGES", chat_limit)
-    app = create_app("testing")
+    app = app_factory("testing")
     with app.app_context():
         from app.extensions import db
 
@@ -34,8 +33,8 @@ def test_rate_limiting_is_disabled_by_default_in_tests(client):
     assert response.status_code == 200
 
 
-def test_exceeding_the_chat_message_limit_returns_429(monkeypatch):
-    client = _client_with_rate_limiting_enabled(monkeypatch)
+def test_exceeding_the_chat_message_limit_returns_429(app_factory, monkeypatch):
+    client = _client_with_rate_limiting_enabled(app_factory, monkeypatch)
     session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
 
     first = client.post("/api/v1/chat/messages", json={"session_id": session_id, "content": "oi"})
@@ -49,8 +48,8 @@ def test_exceeding_the_chat_message_limit_returns_429(monkeypatch):
     assert body["error"]["code"] == "RATE_LIMIT_EXCEEDED"
 
 
-def test_rate_limit_response_includes_retry_after_header(monkeypatch):
-    client = _client_with_rate_limiting_enabled(monkeypatch)
+def test_rate_limit_response_includes_retry_after_header(app_factory, monkeypatch):
+    client = _client_with_rate_limiting_enabled(app_factory, monkeypatch)
     session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
 
     client.post("/api/v1/chat/messages", json={"session_id": session_id, "content": "oi"})
@@ -62,8 +61,8 @@ def test_rate_limit_response_includes_retry_after_header(monkeypatch):
     assert "Retry-After" in response.headers
 
 
-def test_other_routes_are_unaffected_by_the_chat_specific_limit(monkeypatch):
-    client = _client_with_rate_limiting_enabled(monkeypatch)
+def test_other_routes_are_unaffected_by_the_chat_specific_limit(app_factory, monkeypatch):
+    client = _client_with_rate_limiting_enabled(app_factory, monkeypatch)
     session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
     client.post("/api/v1/chat/messages", json={"session_id": session_id, "content": "oi"})
 
@@ -72,8 +71,8 @@ def test_other_routes_are_unaffected_by_the_chat_specific_limit(monkeypatch):
     assert response.status_code == 200
 
 
-def test_limit_allows_requests_again_once_the_window_is_wide_enough(monkeypatch):
-    client = _client_with_rate_limiting_enabled(monkeypatch, chat_limit="2 per hour")
+def test_limit_allows_requests_again_once_the_window_is_wide_enough(app_factory, monkeypatch):
+    client = _client_with_rate_limiting_enabled(app_factory, monkeypatch, chat_limit="2 per hour")
     session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
 
     responses = [

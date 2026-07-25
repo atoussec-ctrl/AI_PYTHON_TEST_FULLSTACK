@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify
 
+from app.config import DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE
+
 docs_bp = Blueprint("docs", __name__)
 
 
@@ -28,7 +30,9 @@ def openapi_spec() -> dict[str, object]:
             {"name": "Chat"},
             {"name": "Attachments"},
             {"name": "Semantic Search"},
+            {"name": "Observability"},
         ],
+        "security": [{"bearerAuth": []}],
         "paths": paths(),
         "components": components(),
     }
@@ -40,7 +44,21 @@ def paths() -> dict[str, object]:
             "get": {
                 "tags": ["Health"],
                 "summary": "Health check",
+                "security": [],
                 "responses": {"200": json_response("HealthResponse")},
+            }
+        },
+        "/metrics": {
+            "get": {
+                "tags": ["Observability"],
+                "summary": "Expose Prometheus metrics",
+                "responses": {
+                    "200": {
+                        "description": "Prometheus text exposition format",
+                        "content": {"text/plain": {"schema": {"type": "string"}}},
+                    },
+                    "401": json_response("ErrorResponse"),
+                },
             }
         },
         "/api/v1/books": {
@@ -83,7 +101,9 @@ def paths() -> dict[str, object]:
                                         "format": "binary",
                                         "description": (
                                             ".txt, .md, .json or .pdf containing "
-                                            "title, author, category, year and summary."
+                                            "title, author, category, year and summary. "
+                                            "Content and declared MIME are validated; PDFs "
+                                            "are subject to configured resource limits."
                                         ),
                                     }
                                 },
@@ -94,6 +114,7 @@ def paths() -> dict[str, object]:
                 "responses": {
                     "201": json_response("ImportBookResponse"),
                     "400": json_response("ErrorResponse"),
+                    "413": json_response("ErrorResponse"),
                 },
             }
         },
@@ -159,10 +180,48 @@ def paths() -> dict[str, object]:
                 "tags": ["Chat"],
                 "summary": "Send a user message and create an assistant answer",
                 "description": "Rate limited (RATE_LIMIT_CHAT_MESSAGES, default 20/min per IP).",
-                "requestBody": json_body("SendMessageRequest"),
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": ref("SendMessageRequest")},
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["session_id"],
+                                "properties": {
+                                    "session_id": string(),
+                                    "content": string(),
+                                    "thinking_mode": {
+                                        "type": "string",
+                                        "enum": ["fast", "balanced", "deep"],
+                                    },
+                                    "model": string(),
+                                    "files": {
+                                        "type": "array",
+                                        "maxItems": DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE,
+                                        "items": {"type": "string", "format": "binary"},
+                                        "description": (
+                                            "Files validated and linked to the user message "
+                                            "within the same unit of work."
+                                        ),
+                                    },
+                                    "attachment_kinds": {
+                                        "type": "array",
+                                        "maxItems": DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE,
+                                        "items": {
+                                            "type": "string",
+                                            "enum": ["document", "image", "audio"],
+                                        },
+                                    },
+                                },
+                            }
+                        },
+                    },
+                },
                 "responses": {
                     "201": json_response("SendMessageResponse"),
                     "400": json_response("ErrorResponse"),
+                    "413": json_response("ErrorResponse"),
                     "429": json_response("ErrorResponse"),
                 },
             }
@@ -211,7 +270,15 @@ def paths() -> dict[str, object]:
                                         "type": "string",
                                         "enum": ["document", "image", "audio"],
                                     },
-                                    "file": {"type": "string", "format": "binary"},
+                                    "file": {
+                                        "type": "string",
+                                        "format": "binary",
+                                        "description": (
+                                            "Allowlisted document, image or audio. The server "
+                                            "validates size, name, MIME and signature/content "
+                                            "before moving it out of quarantine."
+                                        ),
+                                    },
                                 },
                             }
                         }
@@ -220,6 +287,7 @@ def paths() -> dict[str, object]:
                 "responses": {
                     "201": json_response("Attachment"),
                     "400": json_response("ErrorResponse"),
+                    "413": json_response("ErrorResponse"),
                 },
             }
         },
@@ -265,6 +333,16 @@ def paths() -> dict[str, object]:
 
 def components() -> dict[str, object]:
     return {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": (
+                    "Shared API_KEY configured by the operator. Optional only when "
+                    "the backend runs locally with API_KEY unset."
+                ),
+            }
+        },
         "schemas": {
             "HealthResponse": object_schema(
                 {"status": string(), "service": string(), "request_id": nullable_string()}
@@ -311,7 +389,7 @@ def components() -> dict[str, object]:
                     "id": string(),
                     "title": string(),
                     "pinned": {"type": "boolean"},
-                    "pinned_at": string("date-time"),
+                    "pinned_at": nullable_string("date-time"),
                     "created_at": string("date-time"),
                     "updated_at": string("date-time"),
                 }
@@ -341,6 +419,7 @@ def components() -> dict[str, object]:
                     "thinking_mode": {
                         "type": "string",
                         "enum": ["fast", "balanced", "deep"],
+                        "nullable": True,
                     },
                     "status": {
                         "type": "string",
@@ -362,7 +441,7 @@ def components() -> dict[str, object]:
                     "attachment_ids": {"type": "array", "items": string()},
                     "model": string(),
                 },
-                required=["session_id", "content"],
+                required=["session_id"],
             ),
             "SendMessageResponse": object_schema(
                 {
@@ -408,13 +487,16 @@ def components() -> dict[str, object]:
                         {
                             "code": string(),
                             "message": string(),
-                            "details": {"type": "object"},
+                            "details": {
+                                "type": "object",
+                                "additionalProperties": True,
+                            },
                         }
                     ),
                     "request_id": nullable_string(),
                 }
             ),
-        }
+        },
     }
 
 
@@ -440,8 +522,11 @@ def string(format_: str | None = None) -> dict[str, str]:
     return schema
 
 
-def nullable_string() -> dict[str, object]:
-    return {"type": "string", "nullable": True}
+def nullable_string(format_: str | None = None) -> dict[str, object]:
+    schema: dict[str, object] = {"type": "string", "nullable": True}
+    if format_:
+        schema["format"] = format_
+    return schema
 
 
 def integer() -> dict[str, str]:

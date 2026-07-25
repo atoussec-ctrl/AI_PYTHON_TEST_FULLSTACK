@@ -11,9 +11,11 @@ import {
   listSessions,
   semanticSearch,
   sendMessage,
+  sendMessageWithFiles,
   updateSessionPin,
   uploadAttachment,
 } from './client'
+import { saveApiCredential } from './credentials'
 
 describe('chat session client', () => {
   afterEach(() => {
@@ -83,7 +85,7 @@ describe('chat session client', () => {
       title: 'Clean Code',
       author: 'Robert Martin',
       category: 'tech',
-      publication_year: '2008',
+      publication_year: 2008,
       summary: 'Princípios de código limpo.',
     })
 
@@ -143,6 +145,53 @@ describe('chat session client', () => {
     })
 
     expect(response.assistant_message.content).toBe('Olá')
+  })
+
+  it('sends message fields and files in one multipart request', async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        user_message_id: 'msg_user',
+        assistant_message_id: 'msg_assistant',
+        status: 'completed',
+        assistant_message: {
+          id: 'msg_assistant',
+          session_id: 'session_1',
+          role: 'assistant',
+          content: 'Recebido',
+          thinking_mode: 'balanced',
+          status: 'completed',
+          trace_id: null,
+          attachments: [],
+          created_at: '2026-07-24T00:00:00Z',
+        },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const first = new File(['um'], 'um.txt', { type: 'text/plain' })
+    const second = new File(['dois'], 'dois.md', { type: 'text/markdown' })
+
+    await sendMessageWithFiles(
+      {
+        session_id: 'session_1',
+        content: 'Analise os arquivos',
+        thinking_mode: 'deep',
+        model: 'local-model',
+      },
+      [
+        { file: first, kind: 'document' },
+        { file: second, kind: 'document' },
+      ],
+    )
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const body = init.body as FormData
+    expect(body).toBeInstanceOf(FormData)
+    expect(body.get('session_id')).toBe('session_1')
+    expect(body.get('content')).toBe('Analise os arquivos')
+    expect(body.get('thinking_mode')).toBe('deep')
+    expect(body.get('model')).toBe('local-model')
+    expect(body.getAll('files')).toEqual([first, second])
+    expect(body.getAll('attachment_kinds')).toEqual(['document', 'document'])
   })
 
   it('creates a session with default title', async () => {
@@ -346,10 +395,10 @@ describe('deleteAttachment', () => {
 describe('API key header', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
-    vi.unstubAllEnvs()
+    sessionStorage.clear()
   })
 
-  it('does not send an Authorization header when VITE_API_KEY is not configured', async () => {
+  it('does not send an Authorization header when no runtime credential exists', async () => {
     const fetchMock = vi.fn(async () => Response.json([]))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -359,8 +408,8 @@ describe('API key header', () => {
     expect((callInit.headers as Record<string, string>).Authorization).toBeUndefined()
   })
 
-  it('sends a Bearer Authorization header when VITE_API_KEY is configured', async () => {
-    vi.stubEnv('VITE_API_KEY', 'test-secret')
+  it('sends a Bearer Authorization header from the browser session', async () => {
+    saveApiCredential('test-secret')
     const fetchMock = vi.fn(async () => Response.json([]))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -371,7 +420,7 @@ describe('API key header', () => {
   })
 
   it('sends the Authorization header on requests using the raw fetch path (deleteSession)', async () => {
-    vi.stubEnv('VITE_API_KEY', 'test-secret')
+    saveApiCredential('test-secret')
     const fetchMock = vi.fn(async () => new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)
 

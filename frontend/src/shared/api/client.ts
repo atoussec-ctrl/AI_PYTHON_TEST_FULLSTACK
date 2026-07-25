@@ -10,6 +10,7 @@ import type {
   SendMessageInput,
   SendMessageResponse,
 } from './types'
+import { readApiCredential } from './credentials'
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5000/api/v1'
@@ -25,11 +26,11 @@ function parseApiError(
   return message
 }
 
-// Mirrors the backend's optional shared-secret gate (app/security.py): unset
-// by default so local dev and CI stay open, opt-in via VITE_API_KEY when a
-// deployment configures API_KEY on the server.
+// Mirrors the backend's optional shared-secret gate (app/security.py).
+// The key is supplied at runtime and never through a VITE_* build variable:
+// Vite variables are public bundle contents, not a place for secrets.
 function authHeaders(): HeadersInit {
-  const apiKey = import.meta.env.VITE_API_KEY
+  const apiKey = readApiCredential()
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
 }
 
@@ -119,6 +120,30 @@ export function sendMessage(input: SendMessageInput, signal?: AbortSignal) {
   return request<SendMessageResponse>('/chat/messages', {
     method: 'POST',
     body: JSON.stringify(input),
+    signal,
+  })
+}
+
+export function sendMessageWithFiles(
+  input: SendMessageInput,
+  attachments: Array<{ file: File; kind: AttachmentKind }>,
+  signal?: AbortSignal,
+) {
+  const formData = new FormData()
+  formData.set('session_id', input.session_id)
+  formData.set('content', input.content ?? '')
+  formData.set('thinking_mode', input.thinking_mode)
+  if (input.model) {
+    formData.set('model', input.model)
+  }
+  for (const attachment of attachments) {
+    formData.append('files', attachment.file)
+    formData.append('attachment_kinds', attachment.kind)
+  }
+
+  return request<SendMessageResponse>('/chat/messages', {
+    method: 'POST',
+    body: formData,
     signal,
   })
 }

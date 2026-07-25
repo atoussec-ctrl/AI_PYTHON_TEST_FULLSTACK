@@ -8,7 +8,7 @@ BACKEND_PYTEST := $(BACKEND_VENV)/bin/pytest
 BACKEND_RUFF := $(BACKEND_VENV)/bin/ruff
 BACKEND_PIP := python3 -m pip --python $(BACKEND_VENV)
 
-.PHONY: install backend-venv backend-install backend-install-ai dev backend-dev frontend-dev docker-up docker-down docker-logs test lint typecheck build clean backend-test backend-test-cov frontend-test frontend-test-cov seed backend-seed db-backup db-restore
+.PHONY: install backend-venv backend-install backend-install-ai dev backend-dev frontend-dev docker-up docker-down docker-logs test lint typecheck build clean backend-test backend-test-cov frontend-test frontend-test-cov seed backend-seed db-backup db-restore uploads-cleanup uploads-cleanup-dry-run api-generate api-check
 
 BACKEND_DB := backend/storage/app.db
 
@@ -31,11 +31,11 @@ backend-venv:
 
 backend-install: backend-venv
 	@echo "Installing backend dependencies into $(BACKEND_VENV)..."
-	cd backend && python3 -m pip --python .venv install -r requirements.txt
+	cd backend && python3 -m pip --python .venv install -r requirements-dev.txt
 
 backend-install-ai: backend-venv
 	@echo "Installing optional AI dependencies into $(BACKEND_VENV)..."
-	cd backend && python3 -m pip --python .venv install -r requirements-ai.txt
+	cd backend && python3 -m pip --python .venv install -e ".[ai,dev]"
 
 # ── Development ──
 backend-dev:
@@ -83,6 +83,12 @@ db-restore:
 		echo "Nenhum backup encontrado em backend/storage/backups/." ; \
 	fi
 
+uploads-cleanup:
+	cd backend && .venv/bin/python -m flask --app run:app cleanup-uploads
+
+uploads-cleanup-dry-run:
+	cd backend && .venv/bin/python -m flask --app run:app cleanup-uploads --dry-run
+
 # ── Tests ──
 backend-test:
 	cd backend && .venv/bin/pytest -v --tb=short
@@ -94,7 +100,7 @@ frontend-test:
 	cd frontend && pnpm test
 
 frontend-test-cov:
-	cd frontend && pnpm test -- --coverage
+	cd frontend && pnpm test:coverage
 
 test: backend-test frontend-test
 
@@ -106,6 +112,14 @@ lint:
 typecheck:
 	cd backend && .venv/bin/python -m compileall app
 	cd frontend && pnpm typecheck
+
+api-generate:
+	cd backend && .venv/bin/python scripts/export_openapi.py
+	cd frontend && pnpm api:generate
+
+api-check:
+	cd backend && .venv/bin/python scripts/export_openapi.py --check
+	cd frontend && pnpm api:check
 
 # ── Build ──
 build:

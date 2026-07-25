@@ -103,6 +103,18 @@ def test_parse_json_content_ignores_non_object_json():
     assert parse_json_content('"apenas uma string"') is None
 
 
+def test_extract_rejects_a_year_with_more_than_four_digits():
+    extractor = BookMetadataExtractor()
+
+    with pytest.raises(ValidationError, match="quatro dígitos"):
+        extractor.extract(
+            filename="book.json",
+            content=(
+                '{"title":"Livro","author":"Autora","publication_year":10000,"summary":"Resumo"}'
+            ),
+        )
+
+
 # ── BookImportService.import_file: validações de arquivo ──
 
 

@@ -16,17 +16,23 @@ export function formatFileSize(bytes: number): string {
 export function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString)
   const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffSec = Math.floor(diffMs / 1000)
-  const diffMin = Math.floor(diffSec / 60)
-  const diffHour = Math.floor(diffMin / 60)
-  const diffDay = Math.floor(diffHour / 24)
+  if (Number.isNaN(date.getTime())) return 'Data inválida'
 
-  if (diffSec < 60) return 'just now'
-  if (diffMin < 60) return `${diffMin}m ago`
-  if (diffHour < 24) return `${diffHour}h ago`
-  if (diffDay < 7) return `${diffDay}d ago`
-  return date.toLocaleDateString()
+  const diffMs = date.getTime() - now.getTime()
+  const absoluteMs = Math.abs(diffMs)
+  const formatter = new Intl.RelativeTimeFormat('pt-BR', { numeric: 'auto' })
+
+  if (absoluteMs < 60_000) return formatter.format(0, 'second')
+  if (absoluteMs < 3_600_000) {
+    return formatter.format(Math.round(diffMs / 60_000), 'minute')
+  }
+  if (absoluteMs < 86_400_000) {
+    return formatter.format(Math.round(diffMs / 3_600_000), 'hour')
+  }
+  if (absoluteMs < 604_800_000) {
+    return formatter.format(Math.round(diffMs / 86_400_000), 'day')
+  }
+  return date.toLocaleDateString('pt-BR')
 }
 
 export function groupSessionsByDate<T extends { updated_at: string }>(
@@ -39,11 +45,11 @@ export function groupSessionsByDate<T extends { updated_at: string }>(
   const monthAgo = new Date(today.getTime() - 30 * 86400000)
 
   const groups: { label: string; items: T[] }[] = [
-    { label: 'Today', items: [] },
-    { label: 'Yesterday', items: [] },
-    { label: 'Previous 7 Days', items: [] },
-    { label: 'Previous 30 Days', items: [] },
-    { label: 'Older', items: [] },
+    { label: 'Hoje', items: [] },
+    { label: 'Ontem', items: [] },
+    { label: 'Últimos 7 dias', items: [] },
+    { label: 'Últimos 30 dias', items: [] },
+    { label: 'Mais antigas', items: [] },
   ]
 
   for (const session of sessions) {
@@ -87,13 +93,4 @@ export function filterSessionsByQuery<T extends { title: string }>(
   const normalized = query.trim().toLowerCase()
   if (!normalized) return sessions
   return sessions.filter(session => session.title.toLowerCase().includes(normalized))
-}
-
-export function generateId(): string {
-  return crypto.randomUUID()
-}
-
-export function truncate(str: string, maxLength: number): string {
-  if (str.length <= maxLength) return str
-  return str.slice(0, maxLength - 3) + '...'
 }

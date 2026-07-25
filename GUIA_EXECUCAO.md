@@ -1,6 +1,6 @@
 # Guia de Execução — MindSight AI
 
-Documento operacional com os comandos reais usados para instalar, lintar, testar (com cobertura), subir e validar a stack **MindSight AI** (backend Flask + frontend React/Vite) neste ambiente **Windows** (Git Bash / PowerShell). Todos os comandos abaixo foram executados e validados em 2026-07-01.
+Documento operacional com os comandos reais usados para instalar, lintar, testar (com cobertura), subir e validar a stack **MindSight AI** (backend Flask + frontend React/Vite) neste ambiente **Windows** (Git Bash / PowerShell). Os resultados foram revalidados em 2026-07-24.
 
 > Para visão geral do produto, arquitetura e API, veja o [`README.md`](README.md). Este guia foca só em "como rodar".
 
@@ -52,7 +52,7 @@ pnpm --version       # 11.9.0
 make --version       # NÃO instalado neste ambiente
 ```
 
-Se `pnpm` não existir: `corepack enable && corepack prepare pnpm@latest --activate`.
+Se `pnpm` não existir: `corepack enable && corepack prepare pnpm@10.34.5 --activate`.
 
 ---
 
@@ -79,16 +79,18 @@ Para IA real, edite `.env` e defina `CHAT_GATEWAY=openai` (com `OPENAI_API_KEY`)
 cd backend
 python3 -m venv .venv
 .venv/Scripts/python.exe -m pip install --upgrade pip
-.venv/Scripts/python.exe -m pip install -r requirements.txt
+.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
 ```
 
-Dependências opcionais de IA/RAG (LangChain, FAISS, Sentence Transformers — pesadas, não necessárias para o modo `local`):
+Dependências opcionais para uma evolução com FAISS/Sentence Transformers — pesadas e não usadas pelo endpoint semântico demonstrativo atual:
 
 ```bash
-.venv/Scripts/python.exe -m pip install -r requirements-ai.txt
+.venv/Scripts/python.exe -m pip install -e ".[ai,dev]"
 ```
 
-**Resultado obtido:** instalação concluída sem erros (Flask 3.x, SQLAlchemy, Marshmallow, LangSmith, langchain-openai, pytest, ruff).
+`pyproject.toml` é a fonte única das dependências; os arquivos `requirements*.txt` são wrappers de compatibilidade.
+
+**Resultado obtido:** instalação concluída sem erros (Flask 3.x, SQLAlchemy, LangSmith, langchain-openai, pytest e Ruff).
 
 ### Frontend (React / Vite)
 
@@ -97,7 +99,7 @@ cd frontend
 pnpm install
 ```
 
-**Resultado obtido:** 484 pacotes instalados (React 19, Vite 8, TanStack Query, Vitest, Playwright, Storybook, ESLint, TypeScript 6), lockfile validado contra políticas de supply-chain, sem vulnerabilidades reportadas.
+**Resultado obtido:** instalação com lockfile congelado concluída (React 19, Vite 8, TanStack Query, Vitest, Playwright, Storybook, ESLint e TypeScript 6).
 
 ---
 
@@ -149,14 +151,14 @@ pnpm typecheck
 
 ```bash
 cd backend
-.venv/Scripts/pytest.exe --cov=app --cov-report=term-missing --cov-fail-under=85 -v
+.venv/Scripts/pytest.exe --cov=app --cov-report=term-missing --cov-fail-under=95 -v
 ```
 
 **Resultado obtido:**
 
-- **46 testes passaram** (0 falhas)
-- **Cobertura total: 86.45%** (mínimo exigido: 85% — atingido)
-- Arquivos com cobertura mais baixa: `app/routes/attachments.py` (67%), `app/services/observability.py` (74%), `app/services/uploads.py` (77%) — todos relacionados a caminhos de erro/streaming pouco exercitados nos testes atuais, não bloqueante.
+- **305 testes passaram** (0 falhas, 0 warnings)
+- **Cobertura total: 98.67%** (mínimo exigido: 95% — atingido)
+- A suíte cobre validação de payloads, segurança de arquivos/PDF, configuração, observabilidade, rate limiting, contratos e compensação de anexos, além dos fluxos funcionais.
 
 Somente os testes, sem cobertura:
 
@@ -174,20 +176,26 @@ pnpm test:coverage      # com cobertura (script dedicado do package.json)
 
 **Resultado obtido:**
 
-- **9 arquivos de teste, 64 testes passaram** (0 falhas)
-- **Cobertura: 93.03% statements / 89.91% branches / 94.11% functions / 95.08% lines**
-- Ponto mais baixo: `SessionRow.tsx` (50% lines) — linhas de interação de swipe/gesto mobile pouco cobertas.
+- **19 arquivos de teste, 109 testes passaram** (0 falhas)
+- **Cobertura: 84.50% statements / 81.50% branches / 82.40% functions / 86.08% lines**
+- A medição agora inclui todo o código executável de produção. A configuração anterior informava 95.09% de linhas sobre um subconjunto curado e escondia `App.tsx`, hooks e componentes; no escopo completo, o baseline real era 73.67%.
 
 > Nota: `pnpm test -- --coverage` (com `--` extra) **não ativa** a cobertura por causa de como os argumentos são repassados; use `pnpm test:coverage` diretamente.
 
-### E2E (Playwright) — não executado neste ambiente
+### E2E (Playwright)
 
-Requer Google Chrome instalado (`channel: chrome`) e a porta 3002 livre para o Playwright subir o `pnpm dev` automaticamente:
+Instale o Chromium gerenciado pelo Playwright. Mantenha a porta 3002 livre para os cenários de UI e 3003/5001 livres para o smoke real:
 
 ```bash
 cd frontend
+pnpm exec playwright install chromium
 pnpm test:e2e
+pnpm test:e2e:fullstack
 ```
+
+**Resultado obtido:** 5 cenários de UI passaram e 1 foi pulado (cenário exclusivo de mobile no projeto desktop); o smoke full-stack passou 1 jornada.
+
+Os cenários de `test:e2e` interceptam a API e validam a UI. `test:e2e:fullstack` sobe Vite e Flask, usa o gateway local determinístico, atravessa o proxy e confirma persistência em um SQLite de arquivo isolado por `TEST_DATABASE_URL`; os unitários continuam usando `:memory:`.
 
 ---
 
@@ -198,7 +206,7 @@ cd frontend
 pnpm build
 ```
 
-**Resultado obtido:** build concluído em ~0.6s, gerando `dist/` (index.html, CSS ~35KB, bundle principal ~430KB / ~134KB gzip).
+**Resultado obtido:** build concluído em ~1.2s, gerando `dist/` (index.html 0.86KB, CSS 37.07KB, chunk Markdown 322.75KB / 99.59KB gzip e bundle principal 435.75KB / 135.68KB gzip).
 
 ---
 
@@ -281,6 +289,15 @@ curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:3002
 # HTTP 200
 ```
 
+**Métricas Prometheus:**
+
+```bash
+curl -s http://localhost:5000/metrics
+# inclui mindsight_http_requests_total e mindsight_chat_gateway_*
+```
+
+Se `API_KEY` estiver configurada, inclua `Authorization: Bearer <valor>`. Os labels usam templates de rota, nunca IDs concretos.
+
 **Listagem de livros (dados do seed):**
 
 ```bash
@@ -304,7 +321,17 @@ curl -s -X POST http://localhost:5000/api/v1/chat/messages \
 
 Resultado: o gateway `local` (sem chave de API) respondeu corretamente com uma explicação sobre listas em Python, incluindo bloco de código — confirma que o modo determinístico funciona out-of-the-box.
 
-Para testar via navegador: abra http://localhost:3002, envie uma pergunta no chat e confirme a resposta em tempo real (streaming SSE).
+**Backstop de uploads órfãos (execute primeiro em dry-run):**
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m flask --app run:app cleanup-uploads --dry-run
+.\.venv\Scripts\python.exe -m flask --app run:app cleanup-uploads
+```
+
+O frontend corrente não depende desse job no fluxo normal: arquivos e mensagem seguem juntos em um único request multipart. A rotina cobre clientes legados e quedas abruptas entre filesystem e commit.
+
+Para testar via navegador: abra http://localhost:3002, envie uma pergunta no chat e confirme a reprodução progressiva via SSE. A chamada ao provedor termina antes do endpoint de stream; portanto, isto ainda não é streaming token a token do LLM.
 
 ---
 
@@ -330,22 +357,22 @@ docker compose up --build
 
 - Frontend: http://localhost:3002
 - Backend: http://localhost:5000
-- Volume persistente para `backend/storage` (SQLite, uploads, índice FAISS)
+- Volume persistente para `backend/storage` (SQLite e uploads; o índice FAISS ainda não participa do fluxo atual)
 
 ```bash
 docker compose down    # parar
 docker compose logs -f # acompanhar logs
 ```
 
-> Não executado neste ambiente (não foi necessário para a validação; a stack local via venv/pnpm já cobre lint, testes e execução).
+> Validado em 2026-07-24: as imagens de backend e frontend foram compiladas com sucesso por `docker compose build backend frontend`.
 
 ---
 
 ## 12. Divergências encontradas vs. README
 
-Durante a validação real, algumas divergências entre a documentação (`README.md`) e o comportamento observado:
+Durante a validação real, estas divergências foram encontradas e reconciliadas no `README.md`:
 
-1. **Rota OpenAPI:** o README lista `GET /api/v1/openapi.json`, mas o servidor real expõe o JSON em **`GET /openapi.json`** (raiz, sem prefixo `/api/v1`). `/api/v1/openapi.json` retorna `404 NOT_FOUND`. `GET /docs` (interativo) funciona no caminho documentado.
+1. **Rota OpenAPI:** o servidor expõe **`GET /openapi.json`** e **`GET /docs`** na raiz, sem o prefixo `/api/v1`; a tabela principal agora explicita essa exceção.
 2. **`make` no Windows:** o Makefile assume shell POSIX e layout `bin/` da venv; em Git Bash no Windows nenhum dos alvos funciona sem adaptação (ver seção 0).
 3. **Bug de ordem de import — `.env` não era aplicado ao `CHAT_GATEWAY`/chaves de API** (corrigido neste guia, ver seção 14).
 
@@ -372,7 +399,7 @@ taskkill //PID <pid> //F
 
 ```bash
 corepack enable
-corepack prepare pnpm@latest --activate
+corepack prepare pnpm@10.34.5 --activate
 ```
 
 ### Chat retorna erro de IA logo após clonar
@@ -422,6 +449,6 @@ def langsmith_enabled() -> bool:
 
 ### Validação
 
-- `pytest --cov=app --cov-fail-under=85` → **46 passed**, cobertura 86.06%.
+- `pytest --cov=app --cov-fail-under=95` → **305 passed**, cobertura 98.67%.
 - `ruff check .` → sem erros.
 - Fluxo de chat real via `start-stack.ps1`: resposta passou de texto local ("Em Python, uma lista é criada usando colchetes...") para resposta real do DeepSeek via Hugging Face ("Uma **lista** em Python é uma estrutura de dados mutável e ordenada...").

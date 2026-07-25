@@ -4,10 +4,8 @@ import {
   filterSessionsByQuery,
   formatFileSize,
   formatRelativeTime,
-  generateId,
   groupSessionsByDate,
   groupSessionsForSidebar,
-  truncate,
 } from './utils'
 
 describe('utils', () => {
@@ -20,10 +18,10 @@ describe('utils', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-06-12T12:00:00Z'))
 
-    expect(formatRelativeTime('2026-06-12T11:59:30Z')).toBe('just now')
-    expect(formatRelativeTime('2026-06-12T11:30:00Z')).toBe('30m ago')
-    expect(formatRelativeTime('2026-06-12T11:00:00Z')).toBe('1h ago')
-    expect(formatRelativeTime('2026-06-10T12:00:00Z')).toBe('2d ago')
+    expect(formatRelativeTime('2026-06-12T11:59:30Z')).toBe('agora')
+    expect(formatRelativeTime('2026-06-12T11:30:00Z')).toBe('há 30 minutos')
+    expect(formatRelativeTime('2026-06-12T11:00:00Z')).toBe('há 1 hora')
+    expect(formatRelativeTime('2026-06-10T12:00:00Z')).toBe('anteontem')
 
     vi.useRealTimers()
   })
@@ -34,7 +32,9 @@ describe('utils', () => {
 
     const oldDate = new Date('2026-04-01T12:00:00Z')
 
-    expect(formatRelativeTime(oldDate.toISOString())).toBe(oldDate.toLocaleDateString())
+    expect(formatRelativeTime(oldDate.toISOString())).toBe(
+      oldDate.toLocaleDateString('pt-BR'),
+    )
 
     vi.useRealTimers()
   })
@@ -51,16 +51,16 @@ describe('utils', () => {
     ])
 
     expect(groups.map(group => group.label)).toEqual([
-      'Today',
-      'Yesterday',
-      'Previous 7 Days',
-      'Older',
+      'Hoje',
+      'Ontem',
+      'Últimos 7 dias',
+      'Mais antigas',
     ])
 
     vi.useRealTimers()
   })
 
-  it('assigns sessions to Previous 30 Days bucket', () => {
+  it('assigns sessions to the previous 30 days bucket', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-06-12T12:00:00Z'))
 
@@ -68,7 +68,7 @@ describe('utils', () => {
     const groups = groupSessionsByDate([{ updated_at: '2026-05-28T12:00:00Z' }])
 
     expect(groups).toHaveLength(1)
-    expect(groups[0].label).toBe('Previous 30 Days')
+    expect(groups[0].label).toBe('Últimos 30 dias')
 
     vi.useRealTimers()
   })
@@ -109,17 +109,6 @@ describe('utils', () => {
     expect(layout.pinned).toHaveLength(2)
     // Most recently pinned should come first (2026-06-12 > 2026-06-10)
     expect(layout.pinned[0].updated_at).toBe('2026-06-12T10:00:00Z')
-  })
-
-  it('truncates long strings', () => {
-    expect(truncate('abcdef', 10)).toBe('abcdef')
-    expect(truncate('abcdefghijklmnop', 10)).toBe('abcdefg...')
-  })
-
-  it('generates ids', () => {
-    vi.stubGlobal('crypto', { randomUUID: () => 'uuid-test' })
-    expect(generateId()).toBe('uuid-test')
-    vi.unstubAllGlobals()
   })
 
   it('filters sessions by a case-insensitive title match', () => {

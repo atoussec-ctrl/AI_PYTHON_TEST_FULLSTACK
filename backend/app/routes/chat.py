@@ -7,11 +7,14 @@ import time
 
 from flask import Blueprint, Response, current_app, jsonify, request
 
+from app.errors import ValidationError
 from app.extensions import limiter
 from app.repositories import ChatRepository
 from app.services.chat import ChatService
 from app.services.observability import record_feedback
+from app.services.uploads import UploadService
 from app.utils.http import error_response, parse_pagination, validation_error
+from app.validation import json_object, optional_text, required_text, string_list
 
 chat_bp = Blueprint("chat", __name__)
 
@@ -31,8 +34,9 @@ def list_sessions():
 
 @chat_bp.post("/chat/sessions")
 def create_session():
-    payload = request.get_json(silent=True) or {}
-    session = ChatService().create_session(str(payload.get("title", "Nova conversa")))
+    payload = json_object(request.get_json(silent=True))
+    title = optional_text(payload, "title", default="Nova conversa")
+    session = ChatService().create_session(title)
     return jsonify(session.to_dict()), 201
 
 
@@ -68,24 +72,60 @@ def list_messages(session_id: str):
 @limiter.limit(_chat_message_rate_limit)
 def create_message():
     if request.content_type and request.content_type.startswith("multipart/form-data"):
+        # Flask 3.1 supports a view-specific body limit.  A chat may contain
+        # several files, while single-file endpoints keep the stricter global
+        # MAX_CONTENT_LENGTH configured by the app factory.
+        request.max_content_length = (
+            int(current_app.config["MAX_MESSAGE_UPLOAD_SIZE_MB"]) * 1024 * 1024
+        )
+        request.max_form_parts = 10 + 2 * int(current_app.config["MAX_ATTACHMENTS_PER_MESSAGE"])
         payload = request.form
-        attachment_ids = request.form.getlist("attachment_ids")
+        attachment_ids = string_list(request.form.getlist("attachment_ids"), "attachment_ids")
+        files = request.files.getlist("files")
+        attachment_kinds = request.form.getlist("attachment_kinds")
     else:
-        payload = request.get_json(silent=True) or {}
-        attachment_ids = list(payload.get("attachment_ids", []) or [])
+        payload = json_object(request.get_json(silent=True))
+        attachment_ids = string_list(payload.get("attachment_ids"), "attachment_ids")
+        files = []
+        attachment_kinds = []
 
-    session_id = str(payload.get("session_id", "")).strip()
-    if not session_id:
-        return validation_error("Campo session_id é obrigatório.", "session_id")
+    session_id = required_text(payload, "session_id")
+    content = optional_text(payload, "content")
+    thinking_mode = optional_text(payload, "thinking_mode", default="balanced")
+    model = optional_text(payload, "model").strip() or None
 
-    user_message, assistant_message = ChatService(
-        model=str(payload.get("model", "")).strip() or None
-    ).ask(
-        session_id=session_id,
-        content=str(payload.get("content", "")),
-        thinking_mode=str(payload.get("thinking_mode", "balanced")),
-        attachment_ids=attachment_ids,
-    )
+    if files and attachment_ids:
+        raise ValidationError(
+            "Use files ou attachment_ids, não ambos no mesmo envio.", field="attachments"
+        )
+    if attachment_kinds and len(attachment_kinds) != len(files):
+        raise ValidationError(
+            "Cada arquivo deve possuir um attachment_kind correspondente.",
+            field="attachment_kinds",
+        )
+
+    upload_service = UploadService()
+    staged = []
+    if files:
+        kinds = attachment_kinds or [None] * len(files)
+        staged = upload_service.stage_many(
+            files=files,
+            session_id=session_id,
+            kinds=kinds,
+        )
+        attachment_ids = [attachment.id for attachment in staged]
+
+    try:
+        user_message, assistant_message = ChatService(model=model).ask(
+            session_id=session_id,
+            content=content,
+            thinking_mode=thinking_mode,
+            attachment_ids=attachment_ids,
+        )
+    except Exception:
+        if staged:
+            upload_service.discard_staged(staged)
+        raise
 
     return jsonify(
         {
@@ -127,7 +167,7 @@ def create_feedback(assistant_message_id: str):
     if not message:
         return error_response("NOT_FOUND", "Mensagem não encontrada.", 404)
 
-    payload = request.get_json(silent=True) or {}
+    payload = json_object(request.get_json(silent=True))
     try:
         score = float(payload.get("score"))
     except (TypeError, ValueError):
@@ -138,7 +178,7 @@ def create_feedback(assistant_message_id: str):
     result = record_feedback(
         run_id=message.trace_id,
         score=score,
-        key=str(payload.get("key", "user_score")),
-        comment=str(payload.get("comment", "")).strip() or None,
+        key=optional_text(payload, "key", default="user_score").strip() or "user_score",
+        comment=optional_text(payload, "comment").strip() or None,
     )
     return result, 202

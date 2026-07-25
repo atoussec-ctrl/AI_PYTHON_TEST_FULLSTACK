@@ -6,10 +6,15 @@ these are pure data-transformation branches that don't need a full request.
 
 from __future__ import annotations
 
-import pytest
+from io import BytesIO
+from pathlib import Path
 
+import pytest
+from werkzeug.datastructures import FileStorage
+
+from app.extensions import db
 from app.models import Attachment
-from app.services.uploads import infer_kind, read_attachment_text
+from app.services.uploads import UploadService, infer_kind, read_attachment_text
 
 pypdf = pytest.importorskip("pypdf")
 
@@ -80,3 +85,24 @@ def test_infer_kind_falls_back_to_mime_prefix_when_extension_unknown():
 
 def test_infer_kind_returns_none_when_nothing_matches():
     assert infer_kind("arquivo.xyz", "application/x-unknown") is None
+
+
+def test_save_rolls_back_database_and_file_when_commit_fails(client, app, monkeypatch):
+    session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
+
+    def fail_commit():
+        raise RuntimeError("database unavailable")
+
+    with app.app_context():
+        monkeypatch.setattr(db.session, "commit", fail_commit)
+        file = FileStorage(
+            stream=BytesIO(b"safe content"),
+            filename="notes.txt",
+            content_type="text/plain",
+        )
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            UploadService().save(file=file, session_id=session_id)
+
+        assert db.session.query(Attachment).count() == 0
+        assert list(Path(app.config["UPLOAD_DIR"]).glob("*")) == []

@@ -6,6 +6,8 @@ from io import BytesIO
 
 import pytest
 
+from app.errors import ValidationError
+
 pypdf = pytest.importorskip("pypdf")
 
 
@@ -104,3 +106,91 @@ def test_import_pdf_without_text_raises(client):
 
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_extract_pdf_rejects_more_pages_than_configured():
+    from pypdf import PdfWriter
+
+    from app.services.book_import import extract_pdf_text
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
+    buffer = BytesIO()
+    writer.write(buffer)
+
+    with pytest.raises(ValidationError, match="1 páginas"):
+        extract_pdf_text(buffer.getvalue(), max_pages=1)
+
+
+def test_extract_pdf_rejects_large_decompressed_content_stream():
+    from app.services.book_import import extract_pdf_text
+
+    pdf_bytes = _handcrafted_pdf(["text with a content stream"])
+
+    with pytest.raises(ValidationError, match="conteúdo descompactado"):
+        extract_pdf_text(pdf_bytes, max_content_stream_bytes=1)
+
+
+def test_extract_pdf_rejects_excessive_extracted_text():
+    from app.services.book_import import extract_pdf_text
+
+    pdf_bytes = _handcrafted_pdf(["long extracted text"])
+
+    with pytest.raises(ValidationError, match="texto extraído"):
+        extract_pdf_text(pdf_bytes, max_extracted_chars=3)
+
+
+def test_extract_pdf_rejects_encrypted_documents():
+    from pypdf import PdfWriter
+
+    from app.services.book_import import extract_pdf_text
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.encrypt("secret")
+    buffer = BytesIO()
+    writer.write(buffer)
+
+    with pytest.raises(ValidationError, match="criptografado"):
+        extract_pdf_text(buffer.getvalue())
+
+
+def test_extract_pdf_enforces_cooperative_processing_deadline(monkeypatch):
+    from app.services import book_import
+
+    ticks = iter([0.0, 11.0])
+    monkeypatch.setattr(book_import, "monotonic", lambda: next(ticks))
+
+    with pytest.raises(ValidationError, match="tempo seguro"):
+        book_import.extract_pdf_text(_handcrafted_pdf(["content"]), max_processing_seconds=10)
+
+
+def test_import_rejects_pdf_with_mismatched_declared_mime(client):
+    response = client.post(
+        "/api/v1/books/import",
+        data={
+            "file": (
+                BytesIO(_handcrafted_pdf(["content"])),
+                "book.pdf",
+                "text/plain",
+            )
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert "Content-Type" in response.get_json()["error"]["message"]
+
+
+def test_import_rejects_file_larger_than_configured_limit(client, app):
+    app.config["MAX_UPLOAD_SIZE_MB"] = 0
+
+    response = client.post(
+        "/api/v1/books/import",
+        data={"file": (BytesIO(b"title: anything"), "book.txt")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 400
+    assert "tamanho máximo" in response.get_json()["error"]["message"]

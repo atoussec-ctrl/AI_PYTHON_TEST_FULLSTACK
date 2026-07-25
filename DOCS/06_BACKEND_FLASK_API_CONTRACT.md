@@ -25,7 +25,9 @@ Todas as respostas de erro seguem:
 
 Campos temporais sao retornados em ISO 8601. IDs sao strings geradas via UUID com prefixo para sessoes, mensagens e anexos.
 
-## Endpoints publicos
+## Endpoints versionados
+
+Quando `API_KEY` esta preenchida, todos os endpoints abaixo exigem `Authorization: Bearer <valor>`, exceto os health checks. A chave e um segredo compartilhado, nao uma identidade de usuario.
 
 | Metodo | Endpoint | Uso |
 | --- | --- | --- |
@@ -39,13 +41,40 @@ Campos temporais sao retornados em ISO 8601. IDs sao strings geradas via UUID co
 | PATCH | `/chat/sessions/{session_id}` | Atualiza metadados da sessao, hoje `pinned`. |
 | DELETE | `/chat/sessions/{session_id}` | Remove sessao e registros relacionados. |
 | GET | `/chat/sessions/{session_id}/messages` | Lista mensagens da sessao. |
-| POST | `/chat/messages` | Envia pergunta e cria resposta do assistente. |
+| POST | `/chat/messages` | Envia pergunta e cria resposta. Aceita JSON legado com `attachment_ids` ou multipart atômico com arquivos. |
 | GET | `/chat/messages/{assistant_message_id}/stream` | SSE simulado da mensagem ja persistida. |
 | POST | `/chat/messages/{assistant_message_id}/feedback` | Envia feedback para LangSmith, se habilitado. |
 | POST | `/attachments` | Upload de anexo para uma sessao. |
 | GET | `/attachments/{attachment_id}` | Download de anexo. |
 | DELETE | `/attachments/{attachment_id}` | Remove um anexo ainda nao vinculado a uma mensagem (cleanup apos falha no envio). Rejeita anexo ja vinculado. |
 | POST | `/semantic-search` | Busca semantica local demonstrativa. |
+| GET | `/metrics` | Métricas Prometheus; protegido por API key quando configurada. |
+
+### Mensagem multipart atômica
+
+`POST /chat/messages` aceita `multipart/form-data` com `session_id`, `content`, `thinking_mode`, `model`, campos repetidos `files` e campos repetidos `attachment_kinds`. O backend valida e faz staging de todos os arquivos, cria/vincula a mensagem e persiste a resposta em uma única transação de banco. Se validação, flush ou commit falhar, a transação sofre rollback e os arquivos já movidos são compensados.
+
+O limite é `MAX_ATTACHMENTS_PER_MESSAGE`; cada arquivo respeita `MAX_UPLOAD_SIZE_MB` e o corpo multipart completo respeita `MAX_MESSAGE_UPLOAD_SIZE_MB`. `files` e IDs pré-enviados não podem ser combinados na mesma chamada.
+
+O endpoint separado `POST /attachments` permanece compatível com clientes antigos. Para abandono ou crash nesse fluxo legado, execute periodicamente:
+
+```bash
+python -m flask --app run:app cleanup-uploads --dry-run
+python -m flask --app run:app cleanup-uploads
+```
+
+A rotina remove somente registros não vinculados e nomes gerados pelo servidor dentro de `UPLOAD_DIR`, mais antigos que `ORPHAN_UPLOAD_MAX_AGE_HOURS`. O `DELETE` mantém os predicados de órfão no banco e nunca remove um path ainda referenciado.
+
+### Métricas
+
+`GET /metrics` usa o formato de exposição do Prometheus e publica:
+
+- `mindsight_http_requests_total` por método, template de rota e status;
+- `mindsight_http_request_duration_seconds` por método e template de rota;
+- `mindsight_chat_gateway_calls_total` por provider e resultado;
+- `mindsight_chat_gateway_duration_seconds` por provider e resultado.
+
+IDs, URLs concretas, prompts e usuários não viram labels. No container Gunicorn, o diretório multiprocess é preparado antes do preload e agrega os dois workers.
 
 ## Modelos principais
 
@@ -98,9 +127,9 @@ Campos temporais sao retornados em ISO 8601. IDs sao strings geradas via UUID co
 | Gap | Evidencia | Recomendacao |
 | --- | --- | --- |
 | Status de falha | Backend, OpenAPI e frontend usam `failed` para falha persistida do assistente. | Manter teste de contrato cobrindo esse enum. |
-| OpenAPI e tipos TypeScript sao manuais | `routes/openapi.py` e `shared/api/types.ts` evoluem separadamente. | Gerar tipos do OpenAPI ou testar valores reais contra schema. |
-| Sem autenticacao | Todos os endpoints sao publicos no app atual. | Adicionar auth e ownership antes de expor fora do ambiente local. |
-| Sem paginacao | Listagens usam `.all()` no backend. | Incluir `limit`, `cursor`/`page` e limites maximos. |
+| OpenAPI e serializacao Python ainda sao manuais | O frontend deriva seus tipos de `backend/openapi.json` e o CI bloqueia drift; modelos/serializadores Python e a spec executavel ainda podem divergir semanticamente. | Manter testes de contrato sobre valores nulos/enums e, se o contrato crescer, validar respostas reais contra o schema. |
+| Auth sem identidade/ownership | A API key protege o conjunto inteiro de dados com um segredo unico. | Adicionar contas/claims e ownership antes de um deploy publico/multiusuario. |
+| Paginacao por offset | Listagens aceitam `limit`/`offset`, com limite maximo, mas nao retornam metadados/cursor. | Migrar para cursor e envelope quando volume/consistencia exigirem. |
 | SSE nao e streaming real | Endpoint emite tokens de mensagem ja persistida. | Migrar para streaming real do gateway ou renomear como playback. |
 
 ## Criterios para manter contrato saudavel

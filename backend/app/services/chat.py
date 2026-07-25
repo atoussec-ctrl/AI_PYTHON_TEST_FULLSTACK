@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from flask import current_app, has_app_context
 
 from app.errors import NotFoundError, ValidationError
 from app.extensions import db
+from app.metrics import record_gateway_call
 from app.models import Attachment, Book
 from app.repositories import BookRepository, ChatRepository
 from app.services.observability import current_run_id, traceable_if_enabled
@@ -86,6 +88,8 @@ class ChatCompletionGateway:
 class LocalPythonAssistantGateway(ChatCompletionGateway):
     """Deterministic local gateway for development and tests."""
 
+    provider = "local"
+
     @traceable_if_enabled("chat.local_python_assistant", run_type="llm")
     def answer(
         self,
@@ -153,10 +157,17 @@ class LangChainOpenAIGateway(ChatCompletionGateway):
     Imported lazily so tests do not require LangChain.
     """
 
-    def __init__(self, model: str, api_key: str, base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        base_url: str | None = None,
+        provider: str | None = None,
+    ) -> None:
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
+        self.provider = provider or ("openai_compatible" if base_url else "openai")
 
     @traceable_if_enabled("chat.langchain_openai", run_type="llm")
     def answer(
@@ -384,6 +395,7 @@ def build_chat_gateway(model: str | None = None) -> ChatCompletionGateway:
             model=requested if is_hub_model else hf_model,
             api_key=hf_key,
             base_url=hf_base_url,
+            provider="huggingface",
         )
 
     if gateway_mode == "openai" or requested:
@@ -394,7 +406,12 @@ def build_chat_gateway(model: str | None = None) -> ChatCompletionGateway:
 
     # auto: prioriza Hugging Face (DeepSeek), depois OpenAI, depois local.
     if hf_key:
-        return LangChainOpenAIGateway(model=hf_model, api_key=hf_key, base_url=hf_base_url)
+        return LangChainOpenAIGateway(
+            model=hf_model,
+            api_key=hf_key,
+            base_url=hf_base_url,
+            provider="huggingface",
+        )
     if openai_key:
         return LangChainOpenAIGateway(model=openai_model, api_key=openai_key)
     return LocalPythonAssistantGateway()
@@ -491,6 +508,7 @@ class ChatService:
 
         book_context = self._book_context(content, history)
         attachment_context = format_attachment_context(attachments)
+        gateway_started_at = time.perf_counter()
         try:
             answer = self.gateway.answer(
                 content,
@@ -500,10 +518,17 @@ class ChatService:
                 attachment_context=attachment_context,
             )
             status = "completed"
+            gateway_outcome = "success"
         except Exception:
             logger.exception("Falha ao gerar resposta da IA para a sessão %s", session_id)
             answer = GATEWAY_FAILURE_MESSAGE
             status = "failed"
+            gateway_outcome = "failure"
+        record_gateway_call(
+            provider=getattr(self.gateway, "provider", "custom"),
+            outcome=gateway_outcome,
+            duration_seconds=time.perf_counter() - gateway_started_at,
+        )
         trace_id = current_run_id()
         assistant_message = self.repository.create_message(
             session_id=session_id,
@@ -525,10 +550,17 @@ class ChatService:
     ) -> list[Attachment]:
         if not attachment_ids:
             return []
+        max_attachments = int(current_app.config["MAX_ATTACHMENTS_PER_MESSAGE"])
+        if len(attachment_ids) > max_attachments:
+            raise ValidationError(
+                f"Uma mensagem aceita no máximo {max_attachments} anexos.",
+                field="attachment_ids",
+            )
         attachments = self.repository.find_attachments(attachment_ids)
         found_ids = {attachment.id for attachment in attachments}
         if len(found_ids) != len(set(attachment_ids)) or any(
-            attachment.session_id != session_id for attachment in attachments
+            attachment.session_id != session_id or attachment.message_id is not None
+            for attachment in attachments
         ):
             raise ValidationError("Anexos inválidos para esta sessão.", field="attachment_ids")
         return attachments

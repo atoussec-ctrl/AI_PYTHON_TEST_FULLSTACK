@@ -3,26 +3,26 @@ import { defineConfig, devices } from '@playwright/test'
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
-  retries: 0,
+  retries: process.env.CI ? 1 : 0,
   reporter: 'list',
   use: {
     baseURL: 'http://127.0.0.1:3002',
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
   },
   webServer: {
     command: 'pnpm dev --host 127.0.0.1',
     url: 'http://127.0.0.1:3002',
-    reuseExistingServer: true,
+    reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'], channel: 'chrome' },
+      use: { ...devices['Desktop Chrome'] },
     },
     {
       name: 'mobile',
-      use: { ...devices['iPhone 12'], browserName: 'chromium', channel: 'chrome' },
+      use: { ...devices['iPhone 12'], browserName: 'chromium' },
     },
   ],
 })

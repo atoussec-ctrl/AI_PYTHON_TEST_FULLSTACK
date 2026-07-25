@@ -44,7 +44,7 @@ flowchart TB
   subgraph Data
     SQLite[(app.db)]
     Uploads[(storage/uploads)]
-    Faiss[(faiss.index opcional)]
+    HashDocs[(6 documentos + hashing local)]
   end
 
   subgraph External
@@ -62,7 +62,7 @@ flowchart TB
   Services --> OpenAI
   Services --> HF
   Services --> LangSmith
-  Services --> Faiss
+  Services --> HashDocs
 ```
 
 ## Camadas backend
@@ -118,7 +118,7 @@ flowchart TD
   H --> I[Extrai texto quando documento suportado]
 ```
 
-Risco atual: upload e envio de mensagem nao sao transacionais. Se o upload passa e o envio falha, pode haver anexo sem mensagem associada.
+Risco atual: upload e envio de mensagem nao sao uma unica transacao. O cliente remove uploads remotos em falhas conhecidas e restaura os arquivos locais para retry; o backend tambem impede reutilizar um anexo ja vinculado. Um crash/abandono ainda pode deixar orfao, pois nao ha job de backstop.
 
 ## Fluxo de importacao de livro
 
@@ -189,11 +189,14 @@ erDiagram
 
 | Area | Arquivos | Responsabilidade |
 | --- | --- | --- |
-| Shell principal | `frontend/src/App.tsx` | Layout, views, mutacoes, chat, biblioteca, settings. |
+| Raiz de composicao | `frontend/src/App.tsx` | Coordena queries/mutacoes, selecao de view e composicao das features. |
 | API client | `frontend/src/shared/api/client.ts` | Chamadas REST e tratamento basico de erro. |
+| Credencial runtime | `frontend/src/shared/api/credentials.ts` | Mantem a API key apenas na sessao do navegador. |
 | Tipos | `frontend/src/shared/api/types.ts` | Contratos TypeScript usados pela UI. |
-| Chat | `frontend/src/features/chat/*` | Markdown, anexos, audio, linhas de sessao e gestos. |
+| Chat | `frontend/src/features/chat/*` | Sidebar, header, conversa, composer, Markdown, anexos, audio e gestos. |
+| Livros | `frontend/src/features/books/*` | Administracao, importacao, filtros e cards. |
+| Configuracoes | `frontend/src/features/settings/*` | Tema, modelos, thinking mode e credencial de sessao. |
 | UI base | `frontend/src/components/ui/*` | Botao, textarea e badge. |
 | Estilo | `frontend/src/app/styles/globals.css` | Tokens Tailwind, temas e estilos Markdown. |
 
-Gargalo atual: `App.tsx` concentra mais de 1600 linhas. O proximo corte natural e separar `ChatPage`, `BooksAdminView`, `SettingsView`, `ChatComposer`, hooks de mutacao e hooks de selecao de sessao.
+O primeiro corte reduziu `App.tsx` de cerca de 1.550 para 462 linhas fisicas. O proximo corte, se a complexidade crescer, e extrair hooks controladores para sessoes, envio de mensagens e anexos; componentes visuais de chat, livros e configuracoes ja estao separados.

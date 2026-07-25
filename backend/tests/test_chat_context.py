@@ -153,6 +153,33 @@ def test_chat_rejects_attachment_from_another_session(client):
     assert response.get_json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+def test_chat_rejects_reusing_an_attachment_already_linked_to_a_message(client):
+    session_id = client.post("/api/v1/chat/sessions", json={}).get_json()["id"]
+    attachment_id = _upload(client, session_id, "nota.txt", b"conteudo")
+
+    first = client.post(
+        "/api/v1/chat/messages",
+        json={
+            "session_id": session_id,
+            "content": "Primeiro envio",
+            "attachment_ids": [attachment_id],
+        },
+    )
+    second = client.post(
+        "/api/v1/chat/messages",
+        json={
+            "session_id": session_id,
+            "content": "Tente reutilizar",
+            "attachment_ids": [attachment_id],
+        },
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 400
+    messages = client.get(f"/api/v1/chat/sessions/{session_id}/messages").get_json()
+    assert messages[0]["attachments"][0]["id"] == attachment_id
+
+
 # ── Falha do gateway não deixa mensagem órfã nem estoura 500 ──
 
 

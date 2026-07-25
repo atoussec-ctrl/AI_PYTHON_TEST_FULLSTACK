@@ -8,9 +8,9 @@ Analise estatica e verificacoes locais do monorepo:
 - Frontend React/Vite/TypeScript.
 - Testes, Docker, Makefile, CI e documentacao existente.
 
-Nao foram aplicadas correcoes de codigo nesta auditoria; o objetivo foi documentar melhorias, gaps e fixes recomendados.
+Na auditoria original nao foram aplicadas correcoes; ela permanece abaixo como registro historico da evidencia encontrada naquele momento.
 
-**Atualizacao 2026-07-21:** os achados 1, 2 (autenticacao minima, sem ownership — ver `DOCS/01_PRODUCT_VISION.md`), 3, 5, 6, 7, 9, 11 e 13 (drawer mobile; swipe ja tinha alternativa por teclado desde uma fase anterior) foram corrigidos, assim como os achados baixos de "Buscar chats" e TanStack Router nao usado. Ver `DOCS/33_IMPLEMENTATION_STATUS.md` e `DOCS/36_IMPROVEMENT_ROADMAP.md` para o estado atual; este documento permanece como registro historico da auditoria original.
+**Revalidacao 2026-07-24:** os achados 1, 3, 4, 5, 6, 7, 10, 12 e 13 foram fechados. O achado 2 foi mitigado para um MVP single-tenant por API key, mas auth/ownership continua obrigatorio para uso publico. Os achados 8, 9 e 11 mantem trabalho residual. O fluxo atual envia arquivos e mensagem em um multipart transacional, possui limpeza idempotente de orfaos e expoe metricas Prometheus com suporte multiprocess. No achado 4, AV/CDR e processo isolado permanecem condicionais a exposicao publica. A analise atual e as evidencias estao em `DOCS/37_CLEAN_ARCHITECTURE_REVIEW_2026-07-24.md`.
 
 ## Achados criticos/altos
 
@@ -261,8 +261,8 @@ Recomendacao:
 | --- | --- | --- | --- |
 | Botao "Buscar chats" sem comportamento | UI sugere funcao inexistente. | Implementar busca ou remover/desabilitar. | Concluido — filtra sessoes por titulo. |
 | TanStack Router instalado mas nao usado | Dependencia e modelo mental desnecessarios. | Usar rotas reais ou remover dependencia. | Concluido — dependencia removida (junto com `zod`, tambem instalado e nunca usado). |
-| Labels de tempo em ingles | Inconsistencia de UX em app PT-BR. | Usar `Intl.RelativeTimeFormat('pt-BR')`. | Aberto. |
-| Playwright usa `channel: chrome` | Falha em ambientes sem Google Chrome. | Usar Chromium padrao ou instalar Chrome no CI. | Concluido (Fase 1) — CI roda Chromium padrao. |
+| Labels de tempo em ingles | Inconsistencia de UX em app PT-BR. | Usar `Intl.RelativeTimeFormat('pt-BR')`. | Concluido — datas relativas e grupos em PT-BR. |
+| Playwright usa `channel: chrome` | Falha em ambientes sem Google Chrome. | Usar Chromium padrao ou instalar Chrome no CI. | Concluido — configuracao e CI usam Chromium gerenciado pelo Playwright. |
 | README referenciava `DOCS/` inexistente | Links quebrados. | Pasta `DOCS/` criada nesta auditoria. | Concluido. |
 
 ## Pontos fortes
